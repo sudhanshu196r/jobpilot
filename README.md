@@ -24,7 +24,7 @@ run.bat
 
 Then open **http://127.0.0.1:8765**.
 
-1. **Profile → Import from resume.** Upload your PDF/DOCX, or paste the text of your Naukri or LinkedIn profile. Review every section and click **Save profile**. Add *all* your achievements. Tailoring picks the best ones for each job, so more is better.
+1. **Profile → drop your resume** (PDF, DOCX or TXT), or paste your Naukri/LinkedIn profile text. Contact details, roles, achievements, skills, education, projects, certifications and languages are filled in and saved. Your target titles and location are suggested from the resume. A report shows what was found and what's missing, and **Undo import** reverts it. Uploading another resume later adds new details without overwriting your edits (or choose *Replace*). Review each section and add *all* your achievements. Tailoring picks the best ones for each job, so more is better.
 2. **Settings → AI (optional).** Paste an Anthropic API key to get Claude-quality parsing, tailoring, cover letters and screening answers. Without a key, a built-in engine does all of this deterministically.
 3. **Settings → Job sources.** Add company boards (Greenhouse/Lever/Ashby), Remotive, and/or Adzuna. Adzuna has a free key and covers many Indian job boards. Click **Fetch new jobs**.
 4. **Install the extension** (below) and browse Naukri and Indeed as usual. Jobs are captured and get a match badge.
@@ -118,7 +118,7 @@ Site markup changes from time to time. If badges stop appearing on Naukri or Ind
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 20 tests
+.venv/bin/python -m pytest -q          # 28 tests
 .venv/bin/python -m app                # or: uvicorn app.main:app --reload --port 8765
 ```
 

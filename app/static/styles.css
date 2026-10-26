@@ -217,3 +217,17 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
   .job { grid-template-columns: auto auto 1fr; }
   .job .side { grid-column: 1 / -1; flex-direction: row; align-items: center; }
 }
+
+.dropzone {
+  border: 2px dashed var(--line); border-radius: var(--radius); padding: 18px; text-align: center; cursor: pointer;
+  background: var(--panel-2); transition: border-color .15s, background .15s;
+}
+.dropzone:hover, .dropzone:focus-visible, .dropzone.over { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.dz-title { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+.import-card { margin-bottom: 16px; }
+.import-card.hero .dropzone { padding: 44px 18px; }
+.import-card.hero .dz-title { font-size: 18px; }
+.import-result { border: 1px solid var(--good); background: var(--good-soft); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.import-result .pill.good { background: var(--panel); }
+input.needs, textarea.needs { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-soft); }
+details summary { cursor: pointer; color: var(--ink-2); }

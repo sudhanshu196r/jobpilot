@@ -1,0 +1,31 @@
+Rahul Verma
+rahul.verma@gmail.com | 9876543210 | Pune, Maharashtra
+https://www.linkedin.com/in/rahulverma
+
+PROFESSIONAL SUMMARY
+Data analyst with 4 years of experience turning messy data into decisions for e-commerce teams.
+
+WORK EXPERIENCE
+Data Analyst
+Flipkart, Bengaluru
+March 2022 – Present
+- Built Power BI dashboards used by 40 category managers
+- Automated weekly sales reporting with Python and SQL, saving 10 hours/week
+
+Junior Analyst
+Tata Consultancy Services, Pune
+Jun 2020 – Feb 2022
+- Cleaned and modelled retail data in Excel and SQL Server
+- Presented monthly insights to client stakeholders
+
+EDUCATION
+Bachelor of Engineering (Computer Engineering)
+Savitribai Phule Pune University
+2016 – 2020 | 78%
+
+TECHNICAL SKILLS
+Languages: Python, SQL, R
+Tools: Power BI, Tableau, Excel
+
+CERTIFICATIONS
+Google Data Analytics Professional Certificate, Coursera, 2021

@@ -159,7 +159,7 @@ routes.dashboard = async () => {
     </div>
     <div class="grid cols-2" style="margin-top:16px">
       <div class="card"><h2>Setup</h2><ul class="checklist">
-        <li><span class="dot ${s.profile_ready ? "on" : ""}"></span><div class="spacer">Profile with your experience &amp; skills</div><a href="#/profile">${s.profile_ready ? "Edit" : "Add"}</a></li>
+        <li><span class="dot ${s.profile_ready ? "on" : ""}"></span><div class="spacer">Profile with your experience &amp; skills</div><a href="#/profile">${s.profile_ready ? "Edit" : "Upload resume"}</a></li>
         <li><span class="dot ${s.ai_enabled ? "on" : ""}"></span><div class="spacer">Claude API key for AI tailoring <span class="muted small">(optional)</span></div><a href="#/settings">Settings</a></li>
         <li><span class="dot ${hasSources ? "on" : ""}"></span><div class="spacer">Job sources (company boards, Adzuna, Remotive)</div><a href="#/settings">Configure</a></li>
         <li><span class="dot"></span><div class="spacer">Browser extension for Naukri &amp; Indeed</div><a href="#/settings">Install guide</a></li>
@@ -387,6 +387,7 @@ function manualJobModal(onDone) {
 
 let profileState = null;
 routes.profile = async () => {
+  importResult = null;
   const r = await api("/api/profile");
   profileState = r.profile;
   renderProfile(r);
@@ -394,6 +395,7 @@ routes.profile = async () => {
 
 function renderProfile(meta = {}) {
   const p = profileState;
+  const isEmpty = !p.experience.length && !p.skills.length && !p.contact.name;
   const exp = p.experience.map((e, i) => `
     <div class="section-edit"><div class="row head"><b class="spacer">${esc(e.title || "New role")}${e.company ? " · " + esc(e.company) : ""}</b>
       <button class="sm" data-move="experience.${i}.-1" aria-label="Move up">↑</button><button class="sm" data-move="experience.${i}.1" aria-label="Move down">↓</button>
@@ -426,8 +428,9 @@ function renderProfile(meta = {}) {
 
   view.innerHTML = `
     <div class="page-head"><div><h1>Profile</h1><p class="muted">Your master profile. Every tailored resume is built only from what's here.
-      ${meta.derived ? ` · <b>${meta.derived.total_years}</b> yrs experience · ${meta.derived.skills.length} skills detected` : ""}</p></div>
-      <div class="row"><button id="import">Import from resume</button><button class="primary" id="save">Save profile</button></div></div>
+      ${meta.derived && !isEmpty ? ` · <b>${meta.derived.total_years}</b> yrs experience · ${meta.derived.skills.length} skills detected` : ""}</p></div>
+      <div class="row"><button id="import">Upload resume</button><button class="primary" id="save">Save profile</button></div></div>
+    ${importCardHtml(isEmpty)}
     <div id="pf">
     <div class="card"><h2>Contact</h2><div class="form-grid">
       ${inp("Full name", "contact.name", p)}${inp("Email", "contact.email", p, { type: "email" })}${inp("Phone", "contact.phone", p)}
@@ -480,31 +483,92 @@ function renderProfile(meta = {}) {
     const r = await api("/api/profile", { method: "PUT", body: profileState });
     profileState = r.profile; toast("Profile saved — jobs re-scored."); renderProfile(r);
   });
-  $("#import").onclick = importModal;
+  $("#import").onclick = () => $("#imp-file").click();
+  bindImportCard(isEmpty);
 }
 
-function importModal() {
-  const m = $("#modal");
-  m.hidden = false;
-  m.innerHTML = `<div class="card" role="dialog" aria-label="Import resume"><h2>Import from your resume</h2>
-    <p class="small muted">Upload a PDF/DOCX or paste text (e.g. copied from your Naukri or LinkedIn profile). You'll review the result before saving.</p>
-    <form id="imf" class="grid"><input type="file" name="file" accept=".pdf,.docx,.txt,.md">
-      <label class="field">…or paste text<textarea name="text" rows="8"></textarea></label>
-      <label class="check"><input type="checkbox" name="use_llm" checked> Use AI parsing when available (more accurate)</label>
-      <div class="row end"><button type="button" data-cancel>Cancel</button><button class="primary" type="submit">Parse</button></div></form></div>`;
-  m.onclick = (e) => { if (e.target === m || e.target.closest("[data-cancel]")) closeModal(); };
-  $("#imf").onsubmit = (e) => {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    fd.set("use_llm", e.target.use_llm.checked ? "true" : "false");
-    if (!e.target.file.files.length) fd.delete("file");
-    busy(e.submitter, async () => {
+// Resume upload -> profile. The import card sits above the editor; a result
+// banner reports what was filled, what is missing, and offers undo.
+let importResult = null;
+
+function importCardHtml(isEmpty) {
+  const r = importResult;
+  const c = r?.report.counts;
+  const banner = r ? `<div class="import-result">
+      <div class="row"><b class="spacer">✓ Filled from ${esc(r.fileName)} ${r.method === "llm" ? `<span class="pill accent">AI</span>` : `<span class="pill">built-in parser</span>`}</b>
+        ${r.previous ? `<button class="sm" id="imp-undo">Undo import</button>` : ""}<button class="sm ghost" id="imp-close" aria-label="Dismiss">✕</button></div>
+      <div class="chips" style="margin:6px 0">${[["experience", "role"], ["achievements", "achievement"], ["skills", "skill"], ["education", "education entry", "education entries"],
+        ["projects", "project"], ["certifications", "certification"], ["languages", "language"]].filter(([k]) => c[k])
+        .map(([k, one, many]) => `<span class="pill good">${c[k]} ${c[k] === 1 ? one : many || one + "s"}</span>`).join("")}<span class="pill">${r.report.total_years} yrs experience</span></div>
+      ${r.report.missing.length ? `<p class="small">Not found in the resume — please fill in below: ${r.report.missing.map((m) => `<span class="pill warn">${esc(m)}</span>`).join(" ")}</p>`
+        : `<p class="small muted">Everything important was found.</p>`}
+      ${r.warnings.map((w) => `<p class="small muted">${esc(w)}</p>`).join("")}
+      <p class="small muted">${r.mode === "merge" ? "New details were added to your existing profile; nothing was overwritten." : "Your profile was rebuilt from this resume."} It's saved — review each section and edit anything that's off.</p>
+    </div>` : "";
+  return `<div class="card import-card ${isEmpty ? "hero" : ""}" id="import-card">
+    ${banner}
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload resume">
+      <input type="file" id="imp-file" accept=".pdf,.docx,.txt,.md" hidden>
+      <div class="dz-idle">
+        <div class="dz-title">${isEmpty ? "Upload your resume to fill in your profile" : "Update your profile from a resume"}</div>
+        <div class="small muted">Drop a PDF, DOCX or TXT here, or <u>choose a file</u>. Contact details, experience, achievements, skills, education, projects and certifications are filled in automatically.</div>
+      </div>
+      <div class="dz-busy" hidden><span class="spinner"></span> <span id="dz-msg">Reading…</span></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      ${isEmpty ? "" : `<label class="check"><input type="radio" name="imp-mode" value="merge" checked> Add to my profile</label>
+        <label class="check"><input type="radio" name="imp-mode" value="replace"> Replace my profile</label><span class="spacer"></span>`}
+      <label class="check"><input type="checkbox" id="imp-ai" checked> Use AI parsing when an API key is set</label>
+    </div>
+    <details style="margin-top:8px"><summary class="small">No file? Paste your resume or Naukri/LinkedIn profile text</summary>
+      <textarea id="imp-text" rows="7" style="margin-top:8px" placeholder="Paste the full text here"></textarea>
+      <div class="row end" style="margin-top:6px"><button class="primary sm" id="imp-text-go">Fill profile from text</button></div></details>
+  </div>`;
+}
+
+function bindImportCard(isEmpty) {
+  const dz = $("#dropzone");
+  const fileInput = $("#imp-file");
+  const run = async (file, text) => {
+    const fd = new FormData();
+    if (file) fd.set("file", file); else fd.set("text", text);
+    fd.set("use_llm", $("#imp-ai").checked ? "true" : "false");
+    fd.set("mode", isEmpty ? "replace" : ($("input[name=imp-mode]:checked")?.value || "merge"));
+    fd.set("save", "true");
+    if (!isEmpty && fd.get("mode") === "replace" && !confirm("Replace your whole profile with this resume? Job preferences are kept, and you can undo.")) return;
+    $(".dz-idle", dz).hidden = true; $(".dz-busy", dz).hidden = false;
+    $("#dz-msg").textContent = `Reading ${file ? file.name : "pasted text"}…${$("#imp-ai").checked ? " (AI parsing can take a moment)" : ""}`;
+    try {
       const r = await api("/api/profile/import", { method: "POST", form: fd });
-      profileState = r.profile; closeModal(); renderProfile();
-      r.warnings.forEach((w) => toast(w));
-      toast(`Parsed (${r.method}). Review everything, then click Save profile.`);
-    });
+      profileState = r.profile;
+      importResult = { ...r, fileName: file ? file.name : "pasted text" };
+      renderProfile({ derived: r.derived, exists: true });
+      toast("Profile filled and saved");
+      $("#import-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      refreshAiBadge();
+    } catch (e) {
+      toast(e.message, true);
+      $(".dz-idle", dz).hidden = false; $(".dz-busy", dz).hidden = true;
+    }
   };
+  dz.onclick = () => fileInput.click();
+  dz.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } };
+  fileInput.onchange = () => fileInput.files[0] && run(fileInput.files[0]);
+  ["dragenter", "dragover"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("over"); }));
+  dz.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) run(f); });
+  $("#imp-text-go").onclick = () => { const t = $("#imp-text").value.trim(); t ? run(null, t) : toast("Paste some text first", true); };
+  $("#imp-close")?.addEventListener("click", () => { importResult = null; renderProfile({ derived: null, exists: true }); });
+  $("#imp-undo")?.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    const r = await api("/api/profile", { method: "PUT", body: importResult.previous });
+    profileState = r.profile; importResult = null; toast("Import undone"); renderProfile({ ...r, exists: true });
+  }));
+  // Point at what the resume didn't contain.
+  if (importResult) {
+    $$("#pf [data-bind]").forEach((el) => {
+      if (/^(contact\.(name|email|phone|location|linkedin)|headline|summary)$/.test(el.dataset.bind) && !el.value) el.classList.add("needs");
+    });
+  }
 }
 
 // --------------------------------------------------------------------------- applications

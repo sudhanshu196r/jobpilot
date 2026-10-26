@@ -47,15 +47,32 @@ def put_profile(data: ProfileData, session: Session = Depends(get_session)):
         "total_years": profile_utils.total_years(saved), "skills": profile_utils.profile_skills(saved)}}
 
 
+RESUME_TYPES = (".pdf", ".docx", ".txt", ".md")
+
+
 @router.post("/profile/import")
 async def import_profile(
     file: UploadFile | None = File(default=None),
     text: str = Form(default=""),
     use_llm: bool = Form(default=True),
+    mode: Literal["replace", "merge"] = Form(default="replace"),
+    save: bool = Form(default=False),
     session: Session = Depends(get_session),
 ):
-    """Parse a resume into a draft profile. Nothing is saved until PUT /profile."""
+    """Fill the profile from a resume.
+
+    ``mode=replace`` builds the profile from the resume alone (job preferences
+    are kept); ``mode=merge`` adds the resume's details to the existing profile
+    without overwriting anything. With ``save=true`` the result is stored right
+    away and the previous profile is returned so the UI can offer undo;
+    otherwise it is only a draft for review.
+    """
     if file is not None and file.filename:
+        name = file.filename.lower()
+        if name.endswith(".doc"):
+            raise HTTPException(400, "Old .doc files aren't supported. Save it as .docx or PDF and upload again.")
+        if not name.endswith(RESUME_TYPES):
+            raise HTTPException(400, "Upload a PDF, DOCX or TXT resume.")
         content = await file.read()
         if len(content) > 10 * 1024 * 1024:
             raise HTTPException(413, "File too large (max 10 MB).")
@@ -64,20 +81,40 @@ async def import_profile(
         except Exception as exc:
             raise HTTPException(400, f"Could not read file: {exc}") from exc
     if not text.strip():
-        raise HTTPException(400, "Upload a PDF/DOCX/TXT resume or paste its text.")
+        raise HTTPException(400, "No text found. If the PDF is a scanned image, paste the resume text instead.")
     llm = get_llm(session) if use_llm else None
     try:
         draft, method, warnings = profile_parser.parse_resume_text(text, llm)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    # Keep what the user already set that a resume never contains.
+
     current = store.load_profile(session)
-    draft.preferences = current.preferences
-    row = session.get(Profile, 1) or Profile(id=1, data=current.model_dump_json())
-    row.raw_text = text
-    session.add(row)
-    session.commit()
-    return {"profile": draft.model_dump(), "method": method, "warnings": warnings}
+    if mode == "merge" and store.has_profile(session):
+        result = profile_parser.merge_profiles(current, draft)
+    else:
+        draft.preferences = current.preferences  # a resume never contains these
+        result = draft
+    result = profile_parser.suggest_preferences(result)
+
+    previous = None
+    if save:
+        previous = current.model_dump()
+        result = store.save_profile(session, result, raw_text=text)
+    else:
+        row = session.get(Profile, 1) or Profile(id=1, data=current.model_dump_json())
+        row.raw_text = text
+        session.add(row)
+        session.commit()
+    return {
+        "profile": result.model_dump(),
+        "method": method,
+        "mode": mode,
+        "warnings": warnings,
+        "report": profile_parser.import_report(result),
+        "saved": save,
+        "previous": previous,
+        "derived": {"total_years": profile_utils.total_years(result), "skills": profile_utils.profile_skills(result)},
+    }
 
 
 # --------------------------------------------------------------------------- jobs
