@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { margin: 0; width: 330px; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #16191f; background: #fff; }
+    @media (prefers-color-scheme: dark) { body { background: #171a21; color: #e8eaef; } input { background: #1f232c; color: #e8eaef; border-color: #2a2f3a; } .card { border-color: #2a2f3a; } }
+    header { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: #2952cc; color: #fff; font-weight: 700; font-size: 15px; }
+    header img { width: 22px; height: 22px; }
+    header .st { margin-left: auto; font-size: 11px; font-weight: 600; background: rgba(255,255,255,.2); padding: 2px 8px; border-radius: 99px; }
+    main { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+    label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; font-weight: 600; color: #5b6272; }
+    input[type=text], input[type=password] { font: inherit; padding: 6px 8px; border: 1px solid #d9dde5; border-radius: 6px; }
+    .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    button { font: inherit; font-weight: 600; padding: 7px 12px; border-radius: 8px; border: 1px solid #d9dde5; background: #fff; cursor: pointer; color: #16191f; }
+    button.pr { background: #2952cc; color: #fff; border-color: #2952cc; }
+    button:disabled { opacity: .5; }
+    .card { border: 1px solid #e2e5eb; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .m { color: #7a8191; font-size: 12px; }
+    .err { color: #b42335; font-size: 12px; }
+    .chk { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; font-size: 12px; color: inherit; }
+    h3 { margin: 0; font-size: 13px; }
+    a { color: #2952cc; }
+  </style>
+</head>
+<body>
+  <header><img src="icons/icon48.png" alt=""> JobPilot <span class="st" id="st">…</span></header>
+  <main>
+    <section id="connect" class="card" hidden>
+      <h3>Connect to JobPilot</h3>
+      <label>Server <input type="text" id="server" placeholder="http://127.0.0.1:8765"></label>
+      <label>Token (JobPilot → Settings) <input type="password" id="token" autocomplete="off"></label>
+      <div class="row"><button class="pr" id="save">Connect</button><span class="err" id="cerr"></span></div>
+    </section>
+
+    <section id="main" hidden>
+      <div class="card">
+        <h3>Apply queue</h3>
+        <div class="m" id="qinfo">Loading…</div>
+        <div class="row"><button class="pr" id="start">Start applying</button><button id="stop" hidden>Stop</button><button id="open">Open JobPilot</button></div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h3>This page</h3>
+        <div class="row"><button id="fill">Autofill form</button><button id="capture">Save as job</button></div>
+        <div class="m" id="pinfo">On Naukri and Indeed, jobs are captured automatically.</div>
+      </div>
+      <div class="card" style="margin-top:10px">
+        <h3>Options</h3>
+        <label class="chk"><input type="checkbox" id="autoFill"> Autofill forms automatically during the queue</label>
+        <label class="chk"><input type="checkbox" id="autoClickApply"> Click “Apply” automatically on job pages</label>
+        <label class="chk"><input type="checkbox" id="capture_opt"> Capture jobs while browsing Naukri / Indeed</label>
+        <label class="chk"><input type="checkbox" id="useAi"> Draft unknown answers with AI (marked for review)</label>
+        <div class="row"><a href="#" id="disconnect" class="m">Change server / token</a></div>
+      </div>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

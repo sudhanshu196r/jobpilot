@@ -1,0 +1,22 @@
+<!doctype html>
+<html><body>
+<h1>Apply for Senior Backend Engineer</h1>
+<form id="f">
+  <label for="fn">First Name *</label><input id="fn" name="first_name">
+  <label for="ln">Last Name *</label><input id="ln" name="last_name">
+  <div><label>Email<input type="email" name="email"></label></div>
+  <div class="q"><div class="qt">Phone number</div><input name="phone" type="tel"></div>
+  <label for="li">LinkedIn Profile</label><input id="li" name="urls[LinkedIn]">
+  <label for="cv">Resume/CV</label><input id="cv" type="file" name="resume">
+  <label for="np">What is your notice period?</label>
+  <select id="np"><option value="">Select…</option><option>Immediate</option><option>15 days</option><option>30 days</option><option>60 days</option></select>
+  <fieldset><legend>Are you willing to work night shifts?</legend>
+    <label><input type="radio" name="night" value="y"> Yes</label><label><input type="radio" name="night" value="n"> No</label></fieldset>
+  <label for="yrs">Total years of experience</label><input id="yrs" type="number">
+  <fieldset><legend>Gender</legend><label><input type="radio" name="g" value="m"> Male</label><label><input type="radio" name="g" value="f"> Female</label></fieldset>
+  <label for="why">Why do you want to join us?</label><textarea id="why"></textarea>
+  <label for="cl">Cover letter</label><textarea id="cl"></textarea>
+  <input type="hidden" name="csrf" value="x">
+  <button type="submit">Submit</button>
+</form>
+</body></html>
