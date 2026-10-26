@@ -1,6 +1,9 @@
 // JobPilot web UI — no build step, no dependencies.
 // All dynamic text goes through esc(); job descriptions come from third parties.
 
+// Must equal __version__ in app/__init__.py (checked by a test).
+const APP_VERSION = "1.1.0";
+
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -540,6 +543,10 @@ function bindImportCard(isEmpty) {
     $("#dz-msg").textContent = `Reading ${file ? file.name : "pasted text"}…${$("#imp-ai").checked ? " (AI parsing can take a moment)" : ""}`;
     try {
       const r = await api("/api/profile/import", { method: "POST", form: fd });
+      if (!r.report || !r.saved) {  // response from an older server process
+        await checkServerVersion();
+        throw new Error(RESTART_HELP);
+      }
       profileState = r.profile;
       importResult = { ...r, fileName: file ? file.name : "pasted text" };
       renderProfile({ derived: r.derived, exists: true });
@@ -786,5 +793,24 @@ routes.settings = async () => {
   };
 };
 
+// After `git pull` the browser gets the new UI immediately, but a running
+// server keeps the old Python code until restarted. Detect and say so.
+const RESTART_HELP = "JobPilot was updated, but the running server is still the old version. Close the JobPilot window (or press Ctrl+C), start it again with run.bat / ./run.sh, then refresh this page.";
+async function checkServerVersion() {
+  try {
+    const h = await (await fetch("/healthz", { cache: "no-store" })).json();
+    if (h.version === APP_VERSION) return true;
+  } catch { /* offline: other calls will report it */ }
+  if (!$("#version-banner")) {
+    const b = document.createElement("div");
+    b.id = "version-banner";
+    b.className = "version-banner";
+    b.textContent = RESTART_HELP;
+    document.body.prepend(b);
+  }
+  return false;
+}
+
+checkServerVersion();
 refreshAiBadge();
 router();

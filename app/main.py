@@ -12,9 +12,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import __version__
 from .config import config
 from .db import init_db, session_scope
 from .routers import api, ext
@@ -54,7 +55,7 @@ async def lifespan(_app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="JobPilot", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="JobPilot", version=__version__, lifespan=lifespan)
 
 # Only the extension may call cross-origin; the UI is same-origin.
 app.add_middleware(
@@ -86,9 +87,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", include_in_schema=False)
 def index():
-    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    # Versioned asset URLs so a browser never mixes old and new UI code.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8").replace("__VERSION__", __version__)
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():
-    return {"ok": True}
+    return {"ok": True, "version": __version__}

@@ -155,3 +155,16 @@ def test_delete_job_cascades_application(client):
     with session_scope() as s:
         assert s.get(Application, 1) is None
     assert Path(store.resume_files_dir()).exists()
+
+
+def test_ui_and_server_versions_match(client):
+    import re
+
+    from app import __version__
+    from app.main import STATIC_DIR
+
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert re.search(r'const APP_VERSION = "([^"]+)"', js)[1] == __version__
+    assert client.get("/healthz").json()["version"] == __version__
+    html = client.get("/").text
+    assert f"/static/app.js?v={__version__}" in html and "__VERSION__" not in html
