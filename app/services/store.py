@@ -8,12 +8,13 @@ import threading
 from datetime import timedelta
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..config import config
 from ..models import Application, Job, Profile, Resume, utcnow
 from ..schemas import JobIn, KeywordReport, ProfileData, ResumeDoc
-from . import alerts, liveness, matcher, render, settings_store, tailor
+from . import alerts, liveness, locks, matcher, render, settings_store, tailor
 from .llm import get_llm
 from .sources import build_sources
 from .text import norm_key
@@ -55,8 +56,24 @@ def dedupe_key(company: str, title: str, location: str) -> str:
     return "|".join((norm_key(company), norm_key(title), norm_key(location.split(",")[0] if location else "")))
 
 
+
+
 def upsert_jobs(session: Session, items: list[JobIn]) -> tuple[list[Job], int]:
     """Insert new postings and refresh known ones. Returns (touched jobs, new count)."""
+    # Without the lock, a listing and its detail pane posted together could both
+    # see the job as new and insert it twice.
+    with locks.jobs_lock:
+        try:
+            return _upsert_jobs(session, items)
+        except IntegrityError:
+            # Another process (e.g. the MCP server) inserted the same job first: retry as an update.
+            session.rollback()
+            return _upsert_jobs(session, items)
+
+
+def _upsert_jobs(session: Session, items: list[JobIn]) -> tuple[list[Job], int]:
+    # The same posting twice in one batch would collide with itself.
+    items = list({(i.source, i.external_id): i for i in items}.values())
     touched: list[Job] = []
     created = 0
     for item in items:
@@ -112,6 +129,22 @@ def job_dict(job: Job, include_description: bool = False) -> dict:
 
 
 _ingest_lock = threading.Lock()
+# What a running fetch is doing, for the UI's progress display.
+ingest_progress: dict = {"running": False, "done": 0, "total": 0, "current": ""}
+
+
+def start_ingest_background() -> bool:
+    """Run a fetch on a worker thread. False if one is already running."""
+    if _ingest_lock.locked():
+        return False
+    from ..db import session_scope
+
+    def work():
+        with session_scope() as session:
+            run_ingest(session)
+
+    threading.Thread(target=work, name="jobpilot-ingest", daemon=True).start()
+    return True
 
 
 def run_ingest(session: Session) -> dict:
@@ -120,26 +153,38 @@ def run_ingest(session: Session) -> dict:
         return {"status": "busy"}
     try:
         cfg = settings_store.get(session, "sources")
-        sources, errors = build_sources(cfg)
+        profile = load_profile(session)
+        keywords = profile.preferences.target_titles or ([profile.headline] if profile.headline else [])
+        sources, errors = build_sources(cfg, default_keywords=keywords,
+                                        email_cfg=settings_store.get(session, "email_import"))
+        ingest_progress.update(running=True, done=0, total=len(sources), current="")
         counts: dict[str, int] = {}
         fetched_total = new_total = closed_total = 0
         all_touched: list[Job] = []
         for src in sources:
             label = f"{src.name}:{getattr(src, 'board', None) or getattr(src, 'company', None) or getattr(src, 'query', '')}"
+            ingest_progress.update(current=getattr(src, "display_name", "") or label)
             try:
                 items = src.fetch()
             except Exception as exc:  # each source fails independently
                 log.warning("Source %s failed: %s", label, exc)
                 errors.append(str(exc))
+                ingest_progress["done"] += 1
                 continue
             touched, created = upsert_jobs(session, items)
             prefix = getattr(src, "board", None) or getattr(src, "company", None)
-            if prefix and items:  # an empty feed is more likely a glitch than every role closing
+            # Only full board feeds can prove a job closed; an empty feed is more likely a glitch.
+            if prefix and items and src.name in liveness.BOARD_SOURCES:
                 closed_total += liveness.sync_board(session, src.name, prefix, {i.external_id for i in items})
             all_touched += touched
-            counts[label] = created
             fetched_total += len(items)
             new_total += created
+            if src.name == "email":  # one source, many platforms: report each
+                counts.update({f"email:{platform}": n for platform, n in getattr(src, "stats", {}).items()})
+            else:
+                counts[label] = created
+            ingest_progress["done"] += 1
+        ingest_progress.update(current="ranking jobs against your profile")
         purged = _purge_stale(session)
         profile = load_profile(session)
         matcher.rescore(session, profile)
@@ -150,6 +195,7 @@ def run_ingest(session: Session) -> dict:
         settings_store.put(session, "last_ingest", result)
         return result
     finally:
+        ingest_progress.update(running=False, current="")
         _ingest_lock.release()
 
 

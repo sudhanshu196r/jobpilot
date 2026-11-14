@@ -79,7 +79,7 @@ class _Board:
 def test_board_sync_closes_and_reopens(client, monkeypatch):
     client.post("/api/profile/import", data={"text": SAMPLE_RESUME, "use_llm": "false", "save": "true"})
     feed = {"ids": [1, 2, 3]}
-    monkeypatch.setattr(store, "build_sources", lambda cfg: ([_Board(feed["ids"])], []))
+    monkeypatch.setattr(store, "build_sources", lambda cfg, **kw: ([_Board(feed["ids"])], []))
     with session_scope() as s:
         assert store.run_ingest(s)["new"] == 3
         feed["ids"] = [1, 3]  # posting 2 taken down
@@ -142,7 +142,7 @@ def test_alerts_digest_baseline_and_errors(client, monkeypatch):
     client.put("/api/settings", json=cfg)  # enabling baselines existing jobs
     assert client.get("/api/settings").json()["alerts"]["smtp"]["password"] == "••••word"
 
-    monkeypatch.setattr(store, "build_sources", lambda c: ([_Board([7, 8])], []))
+    monkeypatch.setattr(store, "build_sources", lambda c, **kw: ([_Board([7, 8])], []))
     with session_scope() as s:
         result = store.run_ingest(s)
     assert result["alert"] == {"sent": True, "matches": 2}

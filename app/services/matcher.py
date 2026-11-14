@@ -18,7 +18,7 @@ from sqlmodel import Session, select
 
 from ..models import Job, utcnow
 from ..schemas import ProfileData, ScoreDetail
-from . import jd_analyzer, profile_utils
+from . import jd_analyzer, locks, profile_utils
 from .text import TfIdf, norm_key, tokenize
 
 WEIGHTS = {"skills": 45, "text": 20, "title": 15, "experience": 15, "location": 5}
@@ -157,8 +157,19 @@ class Scorer:
 
 def rescore(session: Session, profile: ProfileData, jobs: list[Job] | None = None) -> int:
     """Recompute scores. IDF always uses the whole corpus for comparability."""
+    with locks.jobs_lock:
+        return _rescore(session, profile, jobs)
+
+
+def _rescore(session: Session, profile: ProfileData, jobs: list[Job] | None) -> int:
+    # Re-read: another request may have updated these jobs since they were loaded.
+    session.expire_all()
     all_jobs = session.exec(select(Job)).all()
-    targets = all_jobs if jobs is None else jobs
+    if jobs is not None:
+        wanted = {j.id for j in jobs}
+        targets = [j for j in all_jobs if j.id in wanted]
+    else:
+        targets = all_jobs
     if not targets:
         return 0
     scorer = Scorer(profile, [f"{j.title} {j.description}" for j in all_jobs])

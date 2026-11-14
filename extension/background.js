@@ -2,7 +2,8 @@
 // Content scripts never call the server directly (page CORS would block them);
 // everything goes through the messages handled here.
 
-const DEFAULTS = { server: "http://127.0.0.1:8765", token: "", autoFill: true, autoClickApply: false, capture: true, useAi: true };
+const DEFAULTS = { server: "http://127.0.0.1:8765", token: "", autoFill: true, autoClickApply: false, capture: true, useAi: true,
+  captureLinkedIn: false };
 
 async function config() {
   const stored = await chrome.storage.local.get(Object.keys(DEFAULTS));

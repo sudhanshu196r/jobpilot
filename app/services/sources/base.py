@@ -20,13 +20,21 @@ class JobSource(ABC):
     """A provider of job postings through an official/public API."""
 
     name: str
+    # Company name to show instead of what the feed says (set from the directory).
+    display_name: str = ""
 
     def __init__(self, client: httpx.Client | None = None):
         self.client = client or httpx.Client(timeout=30, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
 
     def get_json(self, url: str, **params):
+        return self._json("GET", url, params=params or None)
+
+    def post_json(self, url: str, body: dict):
+        return self._json("POST", url, json=body)
+
+    def _json(self, method: str, url: str, **kwargs):
         try:
-            resp = self.client.get(url, params=params or None)
+            resp = self.client.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
             raise SourceError(f"{self.name}: request failed: {exc}") from exc
         if resp.status_code == 404:

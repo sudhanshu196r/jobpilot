@@ -12,6 +12,9 @@ browser extension, which reads the pages you are already viewing.
 
 from __future__ import annotations
 
+import re
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 
 from ...schemas import JobIn
@@ -44,7 +47,7 @@ class GreenhouseSource(JobSource):
                 external_id=f"{self.board}:{j['id']}",
                 url=j.get("absolute_url", ""),
                 title=j.get("title", "").strip(),
-                company=company or j.get("company_name") or self.board.title(),
+                company=self.display_name or company or j.get("company_name") or self.board.title(),
                 location=loc,
                 remote=_is_remote(loc),
                 description=html_to_text(j.get("content", "")),
@@ -78,7 +81,7 @@ class LeverSource(JobSource):
                 external_id=f"{self.company}:{j['id']}",
                 url=j.get("hostedUrl", ""),
                 title=j.get("text", "").strip(),
-                company=self.company.replace("-", " ").title(),
+                company=self.display_name or self.company.replace("-", " ").title(),
                 location=loc,
                 remote=(j.get("workplaceType") == "remote") or _is_remote(loc),
                 description="\n\n".join(p for p in parts if p),
@@ -115,11 +118,11 @@ class AshbySource(JobSource):
                 external_id=f"{self.board}:{j['id']}",
                 url=j.get("jobUrl") or j.get("applyUrl", ""),
                 title=j.get("title", "").strip(),
-                company=self.board.replace("-", " ").title(),
+                company=self.display_name or self.board.replace("-", " ").title(),
                 location=j.get("location", ""),
                 remote=bool(j.get("isRemote")) or _is_remote(j.get("location")),
                 description=j.get("descriptionPlain") or html_to_text(j.get("descriptionHtml", "")),
-                salary=comp.get("compensationTierSummary", "") if isinstance(comp, dict) else "",
+                salary=(comp.get("compensationTierSummary") or "") if isinstance(comp, dict) else "",
                 posted_at=j.get("publishedAt", ""),
                 apply_type="external",
             ))
@@ -194,7 +197,155 @@ class AdzunaSource(JobSource):
         return out
 
 
-def build_sources(cfg: dict, client: httpx.Client | None = None) -> tuple[list[JobSource], list[str]]:
+class SmartRecruitersSource(JobSource):
+    """SmartRecruiters public postings API (Bosch, ServiceNow, Freshworks, LinkedIn, ...).
+
+    Big employers list thousands of jobs, so the list is filtered by your
+    keywords and country server-side, then each match's details are fetched.
+    """
+
+    name = "smartrecruiters"
+    API = "https://api.smartrecruiters.com/v1/companies"
+
+    def __init__(self, company: str, keywords: list[str] | None = None, country: str = "",
+                 max_jobs: int = 40, client: httpx.Client | None = None):
+        super().__init__(client)
+        self.company = company.strip().strip("/").split("/")[-1]
+        self.keywords = [k for k in (keywords or []) if k.strip()] or [""]
+        self.country, self.max_jobs = country.strip().lower(), max(1, int(max_jobs))
+
+    def fetch(self) -> list[JobIn]:
+        summaries: dict[str, dict] = {}
+        for kw in self.keywords:
+            params = {"limit": "100"}
+            if kw:
+                params["q"] = kw
+            if self.country:
+                params["country"] = self.country
+            data = self.get_json(f"{self.API}/{self.company}/postings", **params)
+            for p in data.get("content", []):
+                summaries.setdefault(str(p["id"]), p)
+            if len(summaries) >= self.max_jobs:
+                break
+        picked = sorted(summaries.values(), key=lambda p: p.get("releasedDate", ""), reverse=True)[: self.max_jobs]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            details = list(pool.map(self._detail, picked))
+        return [self._job(p, d) for p, d in zip(picked, details)]
+
+    def _detail(self, summary: dict) -> dict:
+        try:
+            return self.get_json(f"{self.API}/{self.company}/postings/{summary['id']}")
+        except SourceError:
+            return {}
+
+    def _job(self, p: dict, d: dict) -> JobIn:
+        loc = p.get("location") or {}
+        sections = ((d.get("jobAd") or {}).get("sections") or {})
+        parts = [f"{sec.get('title', '')}:\n{html_to_text(sec.get('text', ''))}"
+                 for key, sec in sections.items() if key != "companyDescription" and sec.get("text")]
+        return JobIn(
+            source=self.name,
+            external_id=f"{self.company}:{p['id']}",
+            url=d.get("postingUrl") or f"https://jobs.smartrecruiters.com/{self.company}/{p['id']}",
+            title=p.get("name", "").strip(),
+            company=self.display_name or (p.get("company") or {}).get("name") or self.company,
+            location=(loc.get("fullLocation") or ", ".join(x for x in (loc.get("city"), loc.get("country", "").upper()) if x)).replace(", ,", ","),
+            remote=bool(loc.get("remote")) or None,
+            description="\n\n".join(parts),
+            experience_text=(p.get("experienceLevel") or {}).get("label", ""),
+            posted_at=p.get("releasedDate", ""),
+            apply_type="external",
+        )
+
+
+def _clean_org(org: str) -> str:
+    """'2100 NVIDIA USA' -> 'NVIDIA'; 'Salesforce, Inc.' -> 'Salesforce'."""
+    org = re.sub(r"^[A-Z]*\d+[A-Z\d]*\s+", "", org.strip())
+    while True:
+        new = re.sub(r",?\s+(USA|US|Inc\.?|LLC|Ltd\.?|Limited|Corp\.?|Corporation|GmbH|Pvt\.?)$", "", org).strip(" ,")
+        if new == org:
+            return org
+        org = new
+
+
+_WORKDAY_RE = re.compile(r"https?://(?P<host>(?P<tenant>[\w-]+)\.wd\d+\.myworkdayjobs\.com)/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)")
+
+
+class WorkdaySource(JobSource):
+    """A company's Workday careers site (NVIDIA, Salesforce and many large employers).
+
+    Give the careers URL, e.g. https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite.
+    Searched with your keywords; each match's description is then fetched.
+    """
+
+    name = "workday"
+
+    def __init__(self, url: str, keywords: list[str] | None = None, max_jobs: int = 40,
+                 client: httpx.Client | None = None):
+        super().__init__(client)
+        m = _WORKDAY_RE.match(url.strip())
+        if not m:
+            raise SourceError(f"workday: not a Workday careers URL: {url}")
+        self.host, self.tenant, self.site = m["host"], m["tenant"], m["site"]
+        self.company = f"{self.tenant}/{self.site}"
+        self.keywords = [k for k in (keywords or []) if k.strip()] or [""]
+        self.max_jobs = max(1, int(max_jobs))
+
+    @property
+    def _api(self) -> str:
+        return f"https://{self.host}/wday/cxs/{self.tenant}/{self.site}"
+
+    def fetch(self) -> list[JobIn]:
+        found: dict[str, dict] = {}
+        for kw in self.keywords:
+            offset = 0
+            while len(found) < self.max_jobs and offset < 200:
+                data = self.post_json(f"{self._api}/jobs", {"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": kw})
+                posts = data.get("jobPostings") or []
+                for p in posts:
+                    if p.get("externalPath"):
+                        found.setdefault(p["externalPath"], p)
+                if len(posts) < 20:
+                    break
+                offset += 20
+            if len(found) >= self.max_jobs:
+                break
+        picked = list(found.values())[: self.max_jobs]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            details = list(pool.map(self._detail, picked))
+        return [self._job(p, d) for p, d in zip(picked, details)]
+
+    def _detail(self, summary: dict) -> dict:
+        try:
+            return self.get_json(f"{self._api}{summary['externalPath']}")
+        except SourceError:
+            return {}
+
+    def _job(self, p: dict, d: dict) -> JobIn:
+        info = d.get("jobPostingInfo") or {}
+        org = (d.get("hiringOrganization") or {}).get("name", "")
+        company = self.display_name or _clean_org(org) or self.tenant.title()
+        location = info.get("location") or p.get("locationsText", "")
+        if extra := info.get("additionalLocations"):
+            location = "; ".join([location, *extra])
+        req = info.get("jobReqId") or (p.get("bulletFields") or [""])[0] or p["externalPath"]
+        return JobIn(
+            source=self.name,
+            external_id=f"{self.tenant}:{req}",
+            url=info.get("externalUrl") or f"https://{self.host}/{self.site}{p['externalPath']}",
+            title=(info.get("title") or p.get("title", "")).strip(),
+            company=company,
+            location=location,
+            remote=_is_remote(location, info.get("remoteType")),
+            description=html_to_text(info.get("jobDescription", "")),
+            experience_text=info.get("timeType", ""),
+            posted_at=info.get("startDate") or p.get("postedOn", ""),
+            apply_type="external",
+        )
+
+
+def build_sources(cfg: dict, client: httpx.Client | None = None, default_keywords: list[str] | None = None,
+                  email_cfg: dict | None = None) -> tuple[list[JobSource], list[str]]:
     """Instantiate every configured source. Returns (sources, config_errors)."""
     sources: list[JobSource] = []
     errors: list[str] = []
@@ -211,6 +362,21 @@ def build_sources(cfg: dict, client: httpx.Client | None = None) -> tuple[list[J
     if rem.get("enabled"):
         for q in rem.get("queries") or [""]:
             sources.append(RemotiveSource(q, client))
+    from .directory import COMPANIES
+
+    names = {(c["type"], c["id"].lower()): c["name"] for c in COMPANIES}
+    search = cfg.get("search") or {}
+    keywords = [k for k in (search.get("keywords") or default_keywords or []) if k.strip()][:5]
+    per_company = int(search.get("max_per_company") or 40)
+    for company in cfg.get("smartrecruiters") or []:
+        if company.strip():
+            sources.append(SmartRecruitersSource(company, keywords, search.get("country", ""), per_company, client))
+    for url in cfg.get("workday") or []:
+        if url.strip():
+            try:
+                sources.append(WorkdaySource(url, keywords, per_company, client))
+            except SourceError as exc:
+                errors.append(str(exc))
     adz = cfg.get("adzuna") or {}
     if adz.get("enabled"):
         for q in adz.get("queries") or []:
@@ -220,4 +386,21 @@ def build_sources(cfg: dict, client: httpx.Client | None = None) -> tuple[list[J
             except SourceError as exc:
                 errors.append(str(exc))
                 break
+    if email_cfg and email_cfg.get("enabled"):
+        from .email_alerts import EmailAlertSource
+
+        try:
+            sources.append(EmailAlertSource(email_cfg.get("host", ""), email_cfg.get("username", ""),
+                                            email_cfg.get("password", ""), email_cfg.get("port", 993),
+                                            email_cfg.get("folder", "INBOX"), email_cfg.get("days", 3),
+                                            email_cfg.get("platforms")))
+        except SourceError as exc:
+            errors.append(str(exc))
+    for src in sources:
+        if src.name == "email":
+            continue
+        ident = getattr(src, "board", None) or getattr(src, "company", None) or ""
+        if src.name == "workday":
+            ident = f"https://{src.host}/{src.site}"
+        src.display_name = names.get((src.name, ident.lower()), "")
     return sources, errors

@@ -339,7 +339,8 @@
 
   const SUCCESS_RE = /(application (has been )?(submitted|sent|received)|successfully applied|you have applied|thank you for applying|thanks for applying|applied successfully)/i;
 
-  async function runTask({ onPageReady, findApplyButton } = {}) {
+  // manualOnly: show the queue panel but never fill or click anything (LinkedIn).
+  async function runTask({ onPageReady, findApplyButton, manualOnly = false } = {}) {
     let task;
     try { task = await send("getTask"); } catch { return null; }
     if (!task) return null;
@@ -354,7 +355,7 @@
     };
     setPanel(`<div class="t">${esc(task.job.title)}</div><div class="m">${esc(task.job.company)} · ${task.remaining ?? 0} more in queue</div>
       <div class="log"></div>
-      <div class="row"><button class="a pr" data-fill>Autofill</button><button class="a ok" data-applied>Applied ✓ Next</button>
+      <div class="row">${manualOnly ? "" : `<button class="a pr" data-fill>Autofill</button>`}<button class="a ok" data-applied>Applied ✓ Next</button>
       <button class="a" data-skip>Skip</button><button class="a" data-stop>Stop</button></div>
       <div class="m">Review every field, submit the application yourself, then press <b>Applied</b>.</div>`, {
       "[data-fill]": () => autofill({ task, useAi: task.useAi, log }).catch((e) => log(e.message, "err")),
@@ -367,9 +368,10 @@
     if (apply) {
       apply.style.outline = "3px solid #2952cc";
       apply.scrollIntoView({ block: "center", behavior: "smooth" });
-      if (task.autoClickApply) { log("Clicking Apply…"); apply.click(); } else log("Apply button highlighted — click it when ready.");
+      if (task.autoClickApply && !manualOnly) { log("Clicking Apply…"); apply.click(); } else log("Apply button highlighted — click it when ready.");
     }
-    if (task.autoFill) {
+    if (manualOnly) log("Apply on this site yourself; JobPilot doesn't automate it. Then press Applied.");
+    if (task.autoFill && !manualOnly) {
       const run = debounce(() => autofill({ task, useAi: task.useAi, log }).catch((e) => log(e.message, "err")), 900);
       run();
       new MutationObserver(run).observe(document.body, { childList: true, subtree: true });

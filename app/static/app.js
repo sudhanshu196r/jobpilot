@@ -2,7 +2,7 @@
 // All dynamic text goes through esc(); job descriptions come from third parties.
 
 // Must equal __version__ in app/__init__.py (checked by a test).
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
@@ -176,12 +176,7 @@ routes.dashboard = async () => {
     </div>
     <div class="card" style="margin-top:16px"><div class="row"><h2 class="spacer">Top matches</h2><a href="#/jobs">All jobs →</a></div>
       <div class="job-list">${top.items.length ? top.items.map((j) => jobRow(j)).join("") : `<div class="empty">No jobs yet.</div>`}</div></div>`;
-  $("#fetch").onclick = (e) => busy(e.currentTarget, async () => {
-    const r = await api("/api/ingest/run", { method: "POST" });
-    if (r.status === "busy") return toast("A fetch is already running.");
-    toast(`Fetched ${r.fetched} jobs, ${r.new} new.${r.errors.length ? ` ${r.errors.length} source error(s).` : ""}`, r.errors.length > 0 && !r.fetched);
-    router();
-  });
+  $("#fetch").onclick = (e) => fetchJobs(e.currentTarget, () => router());
   $("[data-fresh7]")?.addEventListener("click", () => { jobsState.fresh = "7"; jobsState.min_score = 70; });
   $(".job-list").addEventListener("click", (e) => { const el = e.target.closest("[data-job]"); if (el) openJob(Number(el.dataset.job)); });
 };
@@ -190,9 +185,31 @@ const ageLabel = (days) => (days == null ? "" : days === 0 ? "today" : days < 30
 function freshPills(j) {
   const f = j.freshness || {};
   if (f.closed) return `<span class="pill bad" title="No longer accepting applications">closed</span>`;
-  const isNew = j.fetched_at && Date.now() - new Date(j.fetched_at).getTime() < 864e5;
+  const isNew = f.age_days != null && f.age_days <= 1;  // posted in the last day (or first seen, if no date)
   return `${isNew ? `<span class="pill accent">new</span>` : ""}${f.stale ? `<span class="pill warn" title="Posted over a month ago; may be filled">stale</span>` : ""}
     <span class="small muted" title="Posting age">${ageLabel(f.age_days)}</span>`;
+}
+
+// Fetch runs on the server in the background; show progress on the button.
+async function fetchJobs(btn, onDone) {
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  try {
+    const r = await api("/api/ingest/run?background=true", { method: "POST" });
+    if (r.status === "busy") toast("A fetch is already running — showing its progress.");
+    let st;
+    do {
+      await new Promise((res) => setTimeout(res, 1200));
+      st = await api("/api/ingest/status");
+      if (btn.isConnected) btn.innerHTML = `<span class="spinner"></span> ${st.total ? `${Math.min(st.done + 1, st.total)}/${st.total}` : ""} ${esc(st.current || "Fetching…")}`.slice(0, 160);
+    } while (st.running);
+    const last = st.last || {};
+    const errs = last.errors || [];
+    toast(`Fetched ${last.fetched ?? 0} jobs from ${last.sources ?? 0} sources — ${last.new ?? 0} new${last.closed ? `, ${last.closed} closed` : ""}.${errs.length ? ` ${errs.length} source error(s): ${errs.slice(0, 2).join("; ")}` : ""}`,
+      errs.length > 0 && !last.fetched);
+    onDone?.();
+  } catch (e) { toast(e.message, true); }
+  finally { if (btn.isConnected) { btn.disabled = false; btn.innerHTML = label; } }
 }
 
 function jobRow(j, selectable = false, selected = false) {
@@ -383,12 +400,7 @@ routes.jobs = async () => {
       jobsState.selected.clear(); load();
     });
   };
-  $("#fetch").onclick = (e) => busy(e.currentTarget, async () => {
-    const r = await api("/api/ingest/run", { method: "POST" });
-    if (r.status === "busy") return toast("A fetch is already running.");
-    toast(`Fetched ${r.fetched}, ${r.new} new.${r.errors.length ? " Errors: " + r.errors.join("; ") : ""}`, r.errors.length > 0 && !r.fetched);
-    load();
-  });
+  $("#fetch").onclick = (e) => fetchJobs(e.currentTarget, load);
   $("#add-job").onclick = () => manualJobModal(load);
   await load();
 };
@@ -756,8 +768,12 @@ routes.answers = async () => {
 // --------------------------------------------------------------------------- settings
 
 routes.settings = async () => {
-  const [s, mcp] = await Promise.all([api("/api/settings"), api("/api/mcp-config")]);
+  const [s, mcp, directory] = await Promise.all([api("/api/settings"), api("/api/mcp-config"), api("/api/sources/directory")]);
   const al = s.alerts;
+  const em = s.email_import;
+  const PLATFORMS = [["linkedin", "LinkedIn"], ["naukri", "Naukri"], ["indeed", "Indeed"], ["glassdoor", "Glassdoor"], ["foundit", "foundit"],
+    ["instahyre", "Instahyre"], ["iimjobs", "iimjobs"], ["hirist", "hirist"], ["wellfound", "Wellfound"], ["cutshort", "Cutshort"]];
+  const followedCount = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"].reduce((n, k) => n + (s.sources[k] || []).length, 0);
   const src = s.sources;
   const list = (arr) => esc((arr || []).join(", "));
   view.innerHTML = `<div class="page-head"><div><h1>Settings</h1><p class="muted">Stored locally in your JobPilot database.</p></div>
@@ -773,13 +789,53 @@ routes.settings = async () => {
         <label class="check" style="align-self:end"><input type="checkbox" id="llm-on" ${s.llm.enabled ? "checked" : ""}> AI features enabled</label>
       </div><div class="row" style="margin-top:10px"><button class="sm" id="test">Test connection</button></div></div>
 
-    <div class="card"><h2>Job sources</h2>
-      <p class="small muted">Official public APIs. Naukri and Indeed have none — their jobs come from the browser extension while you browse.</p>
-      <div class="grid cols-3">
-        <label class="field">Greenhouse boards<input id="gh" value="${list(src.greenhouse)}" placeholder="stripe, razorpay"><span class="muted small">from boards.greenhouse.io/<b>name</b></span></label>
-        <label class="field">Lever companies<input id="lv" value="${list(src.lever)}" placeholder="cred, meesho"><span class="muted small">from jobs.lever.co/<b>name</b></span></label>
-        <label class="field">Ashby boards<input id="ab" value="${list(src.ashby)}" placeholder="notion, linear"><span class="muted small">from jobs.ashbyhq.com/<b>name</b></span></label>
-      </div>
+    <div class="card"><h2>Where jobs come from</h2>
+      <p class="small muted">JobPilot gathers recent openings from every channel into one ranked feed: company <b>career pages</b> (fetched directly),
+        <b>LinkedIn, Naukri, Indeed and more</b> through the job-alert emails they already send you, the pages you browse with the extension,
+        and the aggregators below. Click <b>Fetch new jobs</b> on the Jobs page, or let it run every few hours.</p></div>
+
+    <div class="card"><div class="row"><h2 class="spacer">Company career pages</h2><span class="pill accent" id="follow-count">${followedCount} followed</span></div>
+      <p class="small muted">Follow companies to pull every new opening straight from their careers site. The list below was checked live; the number is how many roles they had open in India.</p>
+      <div class="row"><input type="search" id="dir-q" placeholder="Filter companies…" style="max-width:260px">
+        <label class="check"><input type="checkbox" id="dir-india" checked> Hiring in India</label><span class="spacer"></span>
+        <button class="sm" id="dir-all">Follow all shown</button></div>
+      <div class="chips" id="dir" style="margin-top:10px;max-height:260px;overflow:auto"></div>
+      <div class="section-edit" style="margin-top:12px"><b>Any other company</b>
+        <p class="small muted" style="margin:4px 0 8px">Paste its careers page or any job link. Works with Greenhouse, Lever, Ashby, SmartRecruiters and Workday (used by most large employers).</p>
+        <div class="row"><input id="det-url" placeholder="https://careers.example.com  or  https://example.wd1.myworkdayjobs.com/External" style="flex:1">
+          <button class="primary sm" id="det-go">Find job board</button></div>
+        <div id="det-out" class="small" style="margin-top:8px"></div></div>
+      <div class="form-grid" style="margin-top:12px">
+        <label class="field">Search large employers for<input id="sr-kw" value="${list(src.search.keywords)}" placeholder="defaults to your target titles"></label>
+        <label class="field">Country (SmartRecruiters)<input id="sr-c" value="${esc(src.search.country)}" placeholder="in"></label>
+        <label class="field">Max jobs per large employer<input id="sr-max" type="number" min="5" max="200" value="${esc(src.search.max_per_company)}"></label></div>
+      <details style="margin-top:10px"><summary class="small">Advanced: edit followed boards directly</summary>
+        <div class="grid cols-3" style="margin-top:8px">
+          <label class="field">Greenhouse boards<input id="gh" value="${list(src.greenhouse)}"></label>
+          <label class="field">Lever companies<input id="lv" value="${list(src.lever)}"></label>
+          <label class="field">Ashby boards<input id="ab" value="${list(src.ashby)}"></label>
+          <label class="field">SmartRecruiters (case-sensitive)<input id="srl" value="${list(src.smartrecruiters)}"></label>
+          <label class="field" style="grid-column:span 2">Workday careers URLs<input id="wd" value="${list(src.workday)}"></label></div></details></div>
+
+    <div class="card"><h2>LinkedIn, Naukri, Indeed &amp; more — via job-alert emails</h2>
+      <p class="small muted">These sites don't offer an API and forbid scraping, but they email you new jobs. JobPilot reads those alert emails
+        (read-only — nothing is marked, moved or deleted) and adds every job to your feed.</p>
+      <ol class="steps small"><li>Create job alerts on <a href="https://www.linkedin.com/jobs/" target="_blank" rel="noopener">LinkedIn</a>, <a href="https://www.naukri.com/" target="_blank" rel="noopener">Naukri</a>,
+        <a href="https://in.indeed.com/" target="_blank" rel="noopener">Indeed</a> etc. for the roles you want (daily emails).</li>
+        <li>For Gmail, create an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password ↗</a> (the same one as for alerts works) and enter it below.</li>
+        <li>Save, then <b>Test mailbox</b> to see what it finds.</li></ol>
+      <div class="form-grid">
+        <label class="check" style="align-self:end"><input type="checkbox" id="em-on" ${em.enabled ? "checked" : ""}> Import from alert emails</label>
+        <label class="field">Email / username<input id="em-user" value="${esc(em.username)}" placeholder="you@gmail.com" autocomplete="off"></label>
+        <label class="field">App Password<input id="em-pass" type="password" value="${esc(em.password)}" autocomplete="off"></label>
+        <label class="field">IMAP server<input id="em-host" value="${esc(em.host)}"></label>
+        <label class="field">Port<input id="em-port" type="number" value="${esc(em.port)}"></label>
+        <label class="field">Folder<input id="em-folder" value="${esc(em.folder)}"></label>
+        <label class="field">Look back (days)<input id="em-days" type="number" min="1" max="60" value="${esc(em.days)}"></label></div>
+      <div class="chips" style="margin-top:10px">${PLATFORMS.map(([k, l]) => `<label class="check" style="margin-right:10px"><input type="checkbox" data-plat="${k}" ${em.platforms.includes(k) ? "checked" : ""}> ${l}</label>`).join("")}</div>
+      <div class="row" style="margin-top:10px"><button class="sm" id="em-test">Test mailbox</button><span id="em-out" class="small muted"></span></div></div>
+
+    <div class="card"><h2>Other job feeds</h2>
       <div class="section-edit" style="margin-top:14px"><label class="check"><input type="checkbox" id="rm-on" ${src.remotive.enabled ? "checked" : ""}> <b>Remotive</b> (remote jobs worldwide)</label>
         <label class="field" style="margin-top:8px">Search queries<input id="rm-q" value="${list(src.remotive.queries)}" placeholder="python, backend"></label></div>
       <div class="section-edit"><label class="check"><input type="checkbox" id="az-on" ${src.adzuna.enabled ? "checked" : ""}> <b>Adzuna</b> aggregator — includes listings from many Indian job boards. <a href="https://developer.adzuna.com/" target="_blank" rel="noopener">Free API key ↗</a></label>
@@ -830,10 +886,15 @@ routes.settings = async () => {
     const body = {
       llm: { model: $("#llm-model").value, effort: $("#llm-effort").value, enabled: $("#llm-on").checked },
       sources: { greenhouse: split($("#gh").value), lever: split($("#lv").value), ashby: split($("#ab").value),
+        smartrecruiters: split($("#srl").value), workday: split($("#wd").value),
+        search: { keywords: split($("#sr-kw").value), country: $("#sr-c").value.trim().toLowerCase(), max_per_company: Number($("#sr-max").value) || 40 },
         remotive: { enabled: $("#rm-on").checked, queries: split($("#rm-q").value) },
         adzuna: { enabled: $("#az-on").checked, app_id: $("#az-id").value.trim(), app_key: $("#az-key").value.trim(), country: $("#az-c").value,
           where: $("#az-w").value.trim(), queries: split($("#az-q").value), max_pages: Number($("#az-p").value) || 1 } },
       ingest: { interval_hours: Number($("#int").value) || 0, max_age_days: Number($("#age").value) || 0 },
+      email_import: { enabled: $("#em-on").checked, username: $("#em-user").value.trim(), password: $("#em-pass").value,
+        host: $("#em-host").value.trim(), port: Number($("#em-port").value) || 993, folder: $("#em-folder").value.trim() || "INBOX",
+        days: Number($("#em-days").value) || 3, platforms: $$("[data-plat]").filter((c) => c.checked).map((c) => c.dataset.plat) },
       alerts: { enabled: $("#al-on").checked, email_to: $("#al-to").value.trim(), min_score: Number($("#al-min").value) || 0,
         max_items: Number($("#al-max").value) || 15,
         smtp: { host: $("#al-host").value.trim(), port: Number($("#al-port").value) || 587, username: $("#al-user").value.trim(),
@@ -844,6 +905,37 @@ routes.settings = async () => {
     toast("Settings saved"); refreshAiBadge(); router();
   });
   $("#test").onclick = (e) => busy(e.currentTarget, async () => { const r = await api("/api/settings/test-llm", { method: "POST" }); toast(`Connected to ${r.model}`); });
+  // Company directory: follow/unfollow immediately.
+  const TYPE_LABEL = { greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", smartrecruiters: "SmartRecruiters", workday: "Workday" };
+  const syncAdvanced = (lists) => { for (const [k, id] of [["greenhouse", "gh"], ["lever", "lv"], ["ashby", "ab"], ["smartrecruiters", "srl"], ["workday", "wd"]]) $("#" + id).value = lists[k].join(", ");
+    $("#follow-count").textContent = `${Object.values(lists).reduce((n, l) => n + l.length, 0)} followed`; };
+  const shown = () => { const q = $("#dir-q").value.toLowerCase(); return directory.filter((c) => (!$("#dir-india").checked || c.india > 0) && (!q || c.name.toLowerCase().includes(q))); };
+  const renderDir = () => {
+    $("#dir").innerHTML = shown().map((c) => `<button class="sm ${c.followed ? "primary" : ""}" data-follow="${directory.indexOf(c)}" title="${esc(TYPE_LABEL[c.type])}">
+      ${c.followed ? "✓ " : "+ "}${esc(c.name)}${c.india ? ` <span class="muted small">${c.india}</span>` : ""}</button>`).join("") || `<span class="muted small">No match.</span>`;
+  };
+  const toggle = async (c, on) => {
+    const lists = await api(`/api/sources/${on ? "follow" : "unfollow"}`, { method: "POST", body: { type: c.type, id: c.id } });
+    c.followed = on; syncAdvanced(lists);
+  };
+  renderDir();
+  $("#dir-q").oninput = renderDir; $("#dir-india").onchange = renderDir;
+  $("#dir").onclick = async (e) => { const b = e.target.closest("[data-follow]"); if (!b) return; const c = directory[b.dataset.follow];
+    try { await toggle(c, !c.followed); renderDir(); } catch (err) { toast(err.message, true); } };
+  $("#dir-all").onclick = (e) => busy(e.currentTarget, async () => { for (const c of shown().filter((x) => !x.followed)) await toggle(c, true);
+    renderDir(); toast("Following — click Fetch new jobs on the Jobs page"); });
+  $("#det-go").onclick = (e) => busy(e.currentTarget, async () => {
+    const d = await api("/api/sources/detect", { method: "POST", body: { url: $("#det-url").value } });
+    $("#det-out").innerHTML = `Found <b>${esc(d.name)}</b> on ${esc(TYPE_LABEL[d.type])} with ${d.jobs} open role${d.jobs === 1 ? "" : "s"}. <button class="sm primary" id="det-follow">Follow</button>`;
+    $("#det-follow").onclick = async () => { const lists = await api("/api/sources/follow", { method: "POST", body: { type: d.type, id: d.id } });
+      syncAdvanced(lists); $("#det-out").textContent = `Following ${d.name}.`; };
+  });
+  $("#em-test").onclick = (e) => busy(e.currentTarget, async () => {
+    const r = await api("/api/sources/email/test", { method: "POST" });
+    const per = Object.entries(r.per_platform).filter(([, n]) => n).map(([k, n]) => `${k} ${n}`).join(", ");
+    $("#em-out").innerHTML = r.found ? `Found <b>${r.found}</b> jobs (${esc(per)}), e.g. ${r.sample.slice(0, 3).map((j) => esc(`${j.title} — ${j.company || j.source}`)).join("; ")}`
+      : "Connected, but no job-alert emails found in that period. Create alerts on LinkedIn/Naukri/Indeed, or look back more days.";
+  });
   $("#al-test").onclick = (e) => busy(e.currentTarget, async () => { await api("/api/alerts/test", { method: "POST" }); toast("Test email sent — check your inbox"); });
   view.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = () =>
     navigator.clipboard.writeText($("#" + b.dataset.copy).textContent).then(() => toast("Copied"))));

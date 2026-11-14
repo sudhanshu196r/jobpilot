@@ -208,6 +208,7 @@ TAXONOMY: dict[str, list[str]] = {
 }
 
 
+@lru_cache(maxsize=4096)
 def _alias_pattern(alias: str) -> re.Pattern[str]:
     case_sensitive = alias.startswith("=")
     body = re.escape(alias.lstrip("="))
@@ -247,21 +248,75 @@ def canonical(skill: str) -> str:
     return _LOOKUP.get(s.lower(), s)
 
 
-def extract(text: str) -> list[str]:
-    """Taxonomy skills mentioned in ``text``, in first-appearance order."""
+def _norm_alias(value: str) -> str:
+    return re.sub(r"[\s\-]+", " ", value.strip()).lower()
+
+
+@lru_cache(maxsize=1)
+def _combined() -> tuple[re.Pattern[str], re.Pattern[str], dict[str, str], dict[str, str]]:
+    """Two alternations over every alias (case-insensitive and case-sensitive),
+    so a text is scanned once instead of once per alias."""
+    insensitive: dict[str, str] = {}
+    sensitive: dict[str, str] = {}
+    for canonical, aliases in TAXONOMY.items():
+        case_sensitive_lower = {a[1:].lower() for a in aliases if a.startswith("=")}
+        for alias in {canonical.lower(), *aliases}:
+            if alias.startswith("="):
+                sensitive[alias[1:]] = canonical
+            elif alias.lower() not in case_sensitive_lower:
+                insensitive.setdefault(_norm_alias(alias), canonical)
+
+    def alternation(words, extra=None):
+        parts = []
+        for w in sorted(words, key=len, reverse=True):
+            body = re.escape(w).replace(r"\ ", r"[\s\-]+")
+            parts.append(extra.get(w, body) if extra else body)
+        return "|".join(parts)
+
+    go = re.escape("Go") + r"(?![\s\-]+(?:to|ahead|live|through|beyond)\b)"
+    bounds = (r"(?<![A-Za-z0-9+#])(?<![A-Za-z0-9]\.)(?:{})(?![A-Za-z0-9+#])(?!\.[A-Za-z0-9])")
+    rx_i = re.compile(bounds.format(alternation(insensitive)), re.IGNORECASE)
+    rx_s = re.compile(bounds.format(alternation(sensitive, {"Go": go})))
+    return rx_i, rx_s, insensitive, sensitive
+
+
+def _all_matches(rx: re.Pattern[str], text: str, lookup: dict[str, str], normalize):
+    """(start, canonical) like finditer, but also every shorter alias that a longer
+    one at the same spot hid ("GitHub Actions" also mentions "GitHub" -> Git)."""
+    patterns = dict(_compiled())
+    pos = 0
+    while (m := rx.search(text, pos)) is not None:
+        yield m.start(), lookup[normalize(m[0])]
+        end = m.end()
+        while end - 1 > m.start():
+            end -= 1
+            inner = rx.match(text, m.start(), end)
+            if inner is None:
+                continue
+            end = inner.end()
+            canonical = lookup[normalize(inner[0])]
+            # A cut window fakes a word boundary; confirm against the full text.
+            if any(p.match(text, inner.start()) for p in patterns[canonical]):
+                yield inner.start(), canonical
+        pos = m.start() + 1
+
+
+def extract_spans(text: str) -> list[tuple[int, str]]:
+    """(position, canonical skill) for every taxonomy mention in ``text``."""
     if not text:
         return []
-    found: list[tuple[int, str]] = []
-    for canon, patterns in _compiled():
-        best = None
-        for p in patterns:
-            m = p.search(text)
-            if m and (best is None or m.start() < best):
-                best = m.start()
-        if best is not None:
-            found.append((best, canon))
-    found.sort()
-    return [c for _, c in found]
+    rx_i, rx_s, insensitive, sensitive = _combined()
+    out = set(_all_matches(rx_i, text, insensitive, _norm_alias))
+    out |= set(_all_matches(rx_s, text, sensitive, lambda w: w))
+    return sorted(out)
+
+
+def extract(text: str) -> list[str]:
+    """Taxonomy skills mentioned in ``text``, in first-appearance order."""
+    seen: dict[str, None] = {}
+    for _, canonical in extract_spans(text):
+        seen.setdefault(canonical, None)
+    return list(seen)
 
 
 class SkillMatcher:

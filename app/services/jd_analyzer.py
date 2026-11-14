@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -60,20 +61,29 @@ def analyze(title: str, description: str, experience_text: str = "", extra_skill
 
     # Weight skills by the section they appear in.
     mode = 1.0
-    for line in description.splitlines():
+    line_starts: list[int] = []
+    line_weights: list[float] = []
+    pos = 0
+    for line in description.split("\n"):
         stripped = line.strip()
         is_heading = len(stripped) < 80 and (stripped.endswith(":") or not stripped.startswith(("•", "-", "*")))
         if is_heading and _OPTIONAL_HEAD.search(stripped):
             mode = 0.5
         elif is_heading and _REQUIRED_HEAD.search(stripped):
             mode = 1.0
-        line_weight = 0.5 if _OPTIONAL_HEAD.search(stripped) else mode
-        for s in skills_mod.extract(stripped):
-            result.skills[s] = max(result.skills.get(s, 0.0), line_weight)
+        line_starts.append(pos)
+        line_weights.append(0.5 if _OPTIONAL_HEAD.search(stripped) else mode)
+        pos += len(line) + 1
+    # One scan of the whole description; each mention takes its line's weight.
+    for offset, s in skills_mod.extract_spans(description):
+        weight = line_weights[bisect_right(line_starts, offset) - 1]
+        result.skills[s] = max(result.skills.get(s, 0.0), weight)
     for s in skills_mod.extract(title):
         result.skills[s] = 1.0
-    if extra_skills:
-        matcher = skills_mod.SkillMatcher(extra_skills)
+    # Taxonomy skills were found above; only free-form profile skills need a literal search.
+    custom = [k for k in (extra_skills or []) if skills_mod.canonical(k) not in skills_mod.TAXONOMY]
+    if custom:
+        matcher = skills_mod.SkillMatcher(custom)
         for s in matcher.present(text):
             result.skills.setdefault(s, 1.0)
 

@@ -26,11 +26,27 @@ Then open **http://127.0.0.1:8765**.
 
 1. **Profile → drop your resume** (PDF, DOCX or TXT), or paste your Naukri/LinkedIn profile text. Contact details, roles, achievements, skills, education, projects, certifications and languages are filled in and saved. Your target titles and location are suggested from the resume. A report shows what was found and what's missing, and **Undo import** reverts it. Uploading another resume later adds new details without overwriting your edits (or choose *Replace*). Review each section and add *all* your achievements. Tailoring picks the best ones for each job, so more is better.
 2. **Settings → AI (optional).** Paste an Anthropic API key to get Claude-quality parsing, tailoring, cover letters and screening answers. Without a key, a built-in engine does all of this deterministically.
-3. **Settings → Job sources.** Add company boards (Greenhouse/Lever/Ashby), Remotive, and/or Adzuna. Adzuna has a free key and covers many Indian job boards. Click **Fetch new jobs**.
-4. **Install the extension** (below) and browse Naukri and Indeed as usual. Jobs are captured and get a match badge.
-5. **Jobs:** filter, select several, and click **Tailor resumes & queue**.
-6. **Extension → Start applying.** It works through the queue one job at a time.
-7. *(Optional)* **Settings → New-match email alerts** to get a digest whenever new jobs match you, and **Settings → AI assistant (MCP)** to manage your search from Claude.
+3. **Settings → Company career pages.** Follow companies from the built-in list (75 verified employers, sorted by how many roles they have in India), or paste any careers URL. Then click **Fetch new jobs**.
+4. **Settings → job-alert emails.** Connect your mailbox so LinkedIn, Naukri, Indeed and other alerts flow into the same feed (see below).
+5. **Install the extension** (below) and browse Naukri and Indeed as usual. Jobs are captured and get a match badge. LinkedIn capture is opt-in.
+6. **Jobs:** filter, select several, and click **Tailor resumes & queue**.
+7. **Extension → Start applying.** It works through the queue one job at a time.
+8. *(Optional)* **Settings → New-match email alerts** to get a digest whenever new jobs match you, and **Settings → AI assistant (MCP)** to manage your search from Claude.
+
+## Every job in one place
+
+JobPilot collects recent openings from four kinds of channel into one deduplicated feed, ranked against your profile:
+
+| Channel | How | Coverage |
+|---|---|---|
+| **Company career pages** | Their public job-board APIs, fetched directly | Greenhouse, Lever, Ashby, SmartRecruiters and **Workday** (used by most large employers). A built-in list of 75 companies was checked live, including Paytm, Meesho, CRED, Zeta, Groww, InMobi, Freshworks, Bosch, ServiceNow, NVIDIA, Salesforce, Okta, Databricks and LinkedIn's own careers site. Paste any other careers URL and JobPilot finds the board behind it. |
+| **LinkedIn, Naukri, Indeed, Glassdoor, foundit, Instahyre, iimjobs, hirist, Wellfound, Cutshort** | The job-alert emails these sites send you, read over IMAP (read-only) | Every job you're alerted to, continuously, with no scraping. Create alerts for your roles on each site and connect your mailbox in Settings with an App Password. |
+| **Pages you browse** | The browser extension | Naukri and Indeed listings and job pages. LinkedIn is opt-in and read-only. Opening a job also fills in the full description of a job that came from an alert email. |
+| **Aggregators** | Adzuna (free key, covers many Indian boards) and Remotive (remote jobs) | Keyword searches |
+
+Large employers list thousands of roles, so Workday and SmartRecruiters are searched with your target titles (or keywords you set) and capped per company. Greenhouse, Lever and Ashby boards are pulled in full. **Fetch new jobs** runs in the background with live progress, and it also runs automatically every few hours.
+
+Jobs from alert emails start with a short description, so their scores are rougher until you open them once with the extension, which captures the full description.
 
 ## Fresh jobs, alerts and your AI assistant
 
@@ -89,7 +105,9 @@ app/                     FastAPI backend + web UI (no build step)
     answers.py           screening-question memory, profile facts, AI drafts
     liveness.py          posting age, board sync and "still open?" checks (ghost-job detection)
     alerts.py            new-match email digests over SMTP
-    sources/             Greenhouse, Lever, Ashby, Remotive, Adzuna clients
+    sources/             Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Remotive, Adzuna clients;
+                         detect.py (careers URL -> board), directory.py (verified companies),
+                         email_alerts.py (LinkedIn/Naukri/Indeed/... job-alert emails over IMAP)
     store.py             persistence, dedupe across sources, background resume preparation
   routers/api.py         UI API
   routers/ext.py         extension API (token-protected)
@@ -129,13 +147,13 @@ Excluded companies and keywords (set in Preferences) force a score of 0.
 Naukri and Indeed don't offer public APIs for job search or applying, and their terms forbid bots that scrape or submit applications on their own. JobPilot is built to respect that:
 
 - It never stores your Naukri or Indeed password and never logs in for you. The extension works inside *your* browser session, at your pace, on pages you open.
-- Listings are captured only from pages you are viewing. There's no background crawling.
+- Listings are captured only from pages you are viewing. There's no background crawling. For continuous coverage of these sites, JobPilot reads the job-alert emails they send you instead.
 - **You review and submit every application.** Automatic Apply-clicking is off by default. Turn it on only if you're comfortable with it.
 - Keep volume sensible. 20–40 well-matched applications a day gets more callbacks than spraying hundreds.
 
-LinkedIn is intentionally not automated. Use **Add job manually**, or the popup's **Save as job**, to bring LinkedIn postings in for scoring and tailoring.
+LinkedIn is the strictest about automation. JobPilot gets LinkedIn jobs from your LinkedIn job-alert emails. The extension's LinkedIn capture is **off by default**. When you turn it on, it only reads the job pages you open. It never clicks or fills anything on LinkedIn: you apply there yourself, and JobPilot tracks the application.
 
-Site markup changes from time to time. If badges stop appearing on Naukri or Indeed, the selectors in `extension/content/naukri.js` / `indeed.js` need updating. Each lookup has several fallbacks to make this rare.
+Site markup changes from time to time. If badges stop appearing on Naukri, Indeed or LinkedIn, the selectors in `extension/content/naukri.js` / `indeed.js` / `linkedin.js` need updating. Alert emails are parsed by their job links rather than their layout, so template changes rarely break them. Each lookup has several fallbacks to make this rare.
 
 ## Security
 
@@ -148,7 +166,8 @@ Site markup changes from time to time. If badges stop appearing on Naukri or Ind
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 45 tests
+.venv/bin/python -m pytest -q          # 64 tests
+JOBPILOT_LIVE=1 .venv/bin/python -m pytest tests/test_live_sources.py   # optional: hits the real job-board APIs
 .venv/bin/python -m app                # or: uvicorn app.main:app --reload --port 8765
 ```
 
@@ -162,6 +181,8 @@ Data lives in `./data` (SQLite database + generated resumes). Back it up, or del
 | "No text could be extracted" on import | The PDF is a scan. Paste the text instead |
 | Resume upload not attached on a site | Some sites use custom upload widgets. Drag the PDF from the Applications page instead |
 | Adzuna errors | Check the app ID and key. The free tier is rate limited, so lower the pages per query |
+| **Test mailbox** finds 0 jobs | Create job alerts on LinkedIn, Naukri and Indeed first, increase *Look back (days)*, and check the folder (Gmail tabs are all in `INBOX`) |
+| A company you followed shows a fetch error | Its careers site moved. Remove it under *Advanced*, then paste its current careers URL into *Any other company* |
 | Alert test email fails with a login error | Gmail and Outlook need an App Password, not your normal password |
 | Claude doesn't show the JobPilot tools | Use the exact paths from Settings → AI assistant, then fully restart Claude Desktop |
 | AI features failing | Settings → **Test connection**. Everything falls back to the built-in engine automatically |

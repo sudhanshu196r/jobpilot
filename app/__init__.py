@@ -1,2 +1,2 @@
 # Bump together with APP_VERSION in app/static/app.js (a test checks they match).
-__version__ = "1.2.0"
+__version__ = "1.3.0"

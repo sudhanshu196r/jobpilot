@@ -20,6 +20,11 @@ DEFAULTS: dict[str, Any] = {
         "greenhouse": [],
         "lever": [],
         "ashby": [],
+        "smartrecruiters": [],  # company ids, case-sensitive (e.g. "BoschGroup")
+        "workday": [],  # careers URLs, e.g. https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite
+        # Big employers list thousands of roles; Workday and SmartRecruiters are searched with these
+        # keywords (default: your target titles) and capped per company.
+        "search": {"keywords": [], "country": "in", "max_per_company": 40},
         "remotive": {"enabled": False, "queries": []},
         "adzuna": {
             "enabled": False,
@@ -32,6 +37,18 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "ingest": {"interval_hours": 6, "max_age_days": 45},
+    # Job-alert emails from LinkedIn, Naukri, Indeed, ... read over IMAP (read-only).
+    "email_import": {
+        "enabled": False,
+        "host": "imap.gmail.com",
+        "port": 993,
+        "username": "",
+        "password": "",
+        "folder": "INBOX",
+        "days": 3,
+        "platforms": ["linkedin", "naukri", "indeed", "glassdoor", "foundit", "instahyre", "iimjobs", "hirist",
+                      "wellfound", "cutshort"],
+    },
     "alerts": {
         "enabled": False,
         "min_score": 70,
@@ -44,8 +61,9 @@ DEFAULTS: dict[str, Any] = {
     "last_ingest": None,
 }
 
-SECRET_PATHS = (("llm", "api_key"), ("sources", "adzuna", "app_key"), ("alerts", "smtp", "password"))
-EDITABLE = ("llm", "sources", "ingest", "matching", "alerts")
+SECRET_PATHS = (("llm", "api_key"), ("sources", "adzuna", "app_key"), ("alerts", "smtp", "password"),
+                ("email_import", "password"))
+EDITABLE = ("llm", "sources", "ingest", "matching", "alerts", "email_import")
 
 
 def get(session: Session, key: str) -> Any:

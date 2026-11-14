@@ -301,13 +301,94 @@ def assess_job(job_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/ingest/run")
-def ingest_run(session: Session = Depends(get_session)):
+def ingest_run(background: bool = False, session: Session = Depends(get_session)):
+    """Fetch every source now. With background=true it returns at once; poll /ingest/status."""
+    if background:
+        return {"status": "started" if store.start_ingest_background() else "busy"}
     return store.run_ingest(session)
+
+
+# --------------------------------------------------------------------------- career pages
+
+
+SOURCE_LISTS = ("greenhouse", "lever", "ashby", "smartrecruiters", "workday")
+
+
+class SourceRef(BaseModel):
+    type: Literal["greenhouse", "lever", "ashby", "smartrecruiters", "workday"]
+    id: str = Field(min_length=1, max_length=300)
+
+
+class DetectBody(BaseModel):
+    url: str = Field(min_length=3, max_length=2000)
+
+
+def _followed(session: Session) -> dict[str, list[str]]:
+    cfg = settings_store.get(session, "sources")
+    return {k: list(cfg.get(k) or []) for k in SOURCE_LISTS}
+
+
+@router.get("/sources/directory")
+def source_directory(session: Session = Depends(get_session)):
+    """Verified company careers pages, flagged with whether you follow each."""
+    from ..services.sources.directory import COMPANIES
+
+    followed = {(k, v.lower()) for k, vs in _followed(session).items() for v in vs}
+    return [{**c, "followed": (c["type"], c["id"].lower()) in followed} for c in COMPANIES]
+
+
+@router.post("/sources/detect")
+def source_detect(body: DetectBody):
+    """Identify the job board behind any careers URL and count its open roles."""
+    from ..services.sources import SourceError
+    from ..services.sources.detect import detect
+
+    try:
+        return detect(body.url)
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/sources/email/test")
+def source_email_test(session: Session = Depends(get_session)):
+    """Connect to the mailbox and preview what the job-alert emails contain (nothing is saved)."""
+    from ..services.sources import SourceError
+    from ..services.sources.email_alerts import EmailAlertSource
+
+    cfg = settings_store.get(session, "email_import")
+    try:
+        src = EmailAlertSource(cfg.get("host", ""), cfg.get("username", ""), cfg.get("password", ""),
+                               cfg.get("port", 993), cfg.get("folder", "INBOX"), cfg.get("days", 3), cfg.get("platforms"))
+        jobs = src.fetch()
+    except SourceError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"found": len(jobs), "per_platform": src.stats,
+            "sample": [{"source": j.source, "title": j.title, "company": j.company, "location": j.location}
+                       for j in jobs[:8]]}
+
+
+@router.post("/sources/follow")
+def source_follow(body: SourceRef, session: Session = Depends(get_session)):
+    cfg = settings_store.get(session, "sources")
+    items = list(cfg.get(body.type) or [])
+    if body.id.lower() not in {x.lower() for x in items}:
+        items.append(body.id.strip())
+    cfg[body.type] = items
+    settings_store.put(session, "sources", cfg)
+    return _followed(session)
+
+
+@router.post("/sources/unfollow")
+def source_unfollow(body: SourceRef, session: Session = Depends(get_session)):
+    cfg = settings_store.get(session, "sources")
+    cfg[body.type] = [x for x in (cfg.get(body.type) or []) if x.lower() != body.id.lower()]
+    settings_store.put(session, "sources", cfg)
+    return _followed(session)
 
 
 @router.get("/ingest/status")
 def ingest_status(session: Session = Depends(get_session)):
-    return settings_store.get(session, "last_ingest") or {}
+    return {**store.ingest_progress, "last": settings_store.get(session, "last_ingest") or {}}
 
 
 # --------------------------------------------------------------------------- resumes

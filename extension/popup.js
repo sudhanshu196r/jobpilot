@@ -28,7 +28,7 @@ function showConnect(err = "") {
 
 async function showMain() {
   $("connect").hidden = true; $("main").hidden = false;
-  for (const k of ["autoFill", "autoClickApply", "useAi"]) $(k).checked = !!cfg[k];
+  for (const k of ["autoFill", "autoClickApply", "useAi", "captureLinkedIn"]) $(k).checked = !!cfg[k];
   $("capture_opt").checked = !!cfg.capture;
   await renderQueue();
 }
@@ -70,7 +70,8 @@ $("capture").onclick = async () => {
     $("pinfo").textContent = r?.error ? r.error : `Saved — match score ${Math.round(r.score ?? 0)}. Open JobPilot to tailor a resume.`;
   } catch (e) { $("pinfo").textContent = e.message; }
 };
-for (const [id, key] of [["autoFill", "autoFill"], ["autoClickApply", "autoClickApply"], ["useAi", "useAi"], ["capture_opt", "capture"]]) {
+for (const [id, key] of [["autoFill", "autoFill"], ["autoClickApply", "autoClickApply"], ["useAi", "useAi"], ["capture_opt", "capture"],
+  ["captureLinkedIn", "captureLinkedIn"]]) {
   $(id).onchange = async (e) => { cfg = await send("saveConfig", { values: { [key]: e.target.checked } }); };
 }
 chrome.runtime.onMessage.addListener((msg) => { if (msg.type === "queueChanged") renderQueue(msg.state); });
