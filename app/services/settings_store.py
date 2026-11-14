@@ -32,12 +32,20 @@ DEFAULTS: dict[str, Any] = {
         },
     },
     "ingest": {"interval_hours": 6, "max_age_days": 45},
+    "alerts": {
+        "enabled": False,
+        "min_score": 70,
+        "max_items": 15,
+        "email_to": "",
+        "smtp": {"host": "smtp.gmail.com", "port": 587, "username": "", "password": "", "from": "", "use_tls": True},
+    },
     "matching": {"min_score_to_show": 0},
     "extension_token": None,  # generated lazily
     "last_ingest": None,
 }
 
-SECRET_PATHS = (("llm", "api_key"), ("sources", "adzuna", "app_key"))
+SECRET_PATHS = (("llm", "api_key"), ("sources", "adzuna", "app_key"), ("alerts", "smtp", "password"))
+EDITABLE = ("llm", "sources", "ingest", "matching", "alerts")
 
 
 def get(session: Session, key: str) -> Any:
@@ -83,7 +91,7 @@ def llm_settings(session: Session) -> dict[str, Any]:
 
 def public_settings(session: Session) -> dict[str, Any]:
     """All user-editable settings with secrets masked."""
-    out = {k: get(session, k) for k in ("llm", "sources", "ingest", "matching")}
+    out = {k: get(session, k) for k in EDITABLE}
     out["llm"]["api_key_source"] = llm_settings(session)["api_key_source"]
     for path in SECRET_PATHS:
         node = out
@@ -94,7 +102,7 @@ def public_settings(session: Session) -> dict[str, Any]:
 
 
 def update_settings(session: Session, incoming: dict[str, Any]) -> None:
-    for key in ("llm", "sources", "ingest", "matching"):
+    for key in EDITABLE:
         if key not in incoming:
             continue
         current = get(session, key)

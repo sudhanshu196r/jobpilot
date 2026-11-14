@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from ..config import config
 from ..models import Application, Job, Profile, Resume, utcnow
 from ..schemas import JobIn, KeywordReport, ProfileData, ResumeDoc
-from . import matcher, render, settings_store, tailor
+from . import alerts, liveness, matcher, render, settings_store, tailor
 from .llm import get_llm
 from .sources import build_sources
 from .text import norm_key
@@ -90,6 +90,7 @@ def upsert_jobs(session: Session, items: list[JobIn]) -> tuple[list[Job], int]:
             if len(item.description) > len(existing.description):
                 existing.description = item.description
             existing.dedupe_key = key
+            existing.closed_at = None  # seen live again
             existing.updated_at = utcnow()
             session.add(existing)
             touched.append(existing)
@@ -100,8 +101,9 @@ def upsert_jobs(session: Session, items: list[JobIn]) -> tuple[list[Job], int]:
 
 
 def job_dict(job: Job, include_description: bool = False) -> dict:
-    d = job.model_dump(exclude={"description", "score_detail", "dedupe_key"})
+    d = job.model_dump(exclude={"description", "score_detail", "dedupe_key", "alerted"})
     d["score_detail"] = json.loads(job.score_detail or "{}")
+    d["freshness"] = liveness.freshness(job)
     if include_description:
         d["description"] = job.description
     else:
@@ -120,7 +122,7 @@ def run_ingest(session: Session) -> dict:
         cfg = settings_store.get(session, "sources")
         sources, errors = build_sources(cfg)
         counts: dict[str, int] = {}
-        fetched_total = new_total = 0
+        fetched_total = new_total = closed_total = 0
         all_touched: list[Job] = []
         for src in sources:
             label = f"{src.name}:{getattr(src, 'board', None) or getattr(src, 'company', None) or getattr(src, 'query', '')}"
@@ -131,6 +133,9 @@ def run_ingest(session: Session) -> dict:
                 errors.append(str(exc))
                 continue
             touched, created = upsert_jobs(session, items)
+            prefix = getattr(src, "board", None) or getattr(src, "company", None)
+            if prefix and items:  # an empty feed is more likely a glitch than every role closing
+                closed_total += liveness.sync_board(session, src.name, prefix, {i.external_id for i in items})
             all_touched += touched
             counts[label] = created
             fetched_total += len(items)
@@ -138,8 +143,10 @@ def run_ingest(session: Session) -> dict:
         purged = _purge_stale(session)
         profile = load_profile(session)
         matcher.rescore(session, profile)
+        alert = alerts.notify_new_matches(session)
         result = {"status": "ok", "at": utcnow().isoformat(), "fetched": fetched_total, "new": new_total,
-                  "per_source": counts, "errors": errors, "purged": purged, "sources": len(sources)}
+                  "closed": closed_total, "per_source": counts, "errors": errors, "purged": purged,
+                  "sources": len(sources), "alert": alert}
         settings_store.put(session, "last_ingest", result)
         return result
     finally:

@@ -80,7 +80,7 @@ def test_full_flow(client):
 
     # Applied jobs are not re-queued.
     r = client.post("/api/applications/bulk", json={"job_ids": [good["id"]], "use_llm": False})
-    assert r.json() == {"queued": 0, "skipped_already_applied": 1}
+    assert r.json() == {"queued": 0, "skipped_already_applied": 1, "skipped_closed": 0}
 
 
 def test_extension_capture_and_dedupe(client):

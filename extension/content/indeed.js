@@ -1,7 +1,7 @@
 // Indeed: capture search results + job details, badges, apply assistance.
 // "Easily apply" continues on smartapply.indeed.com, handled by ats.js.
 (() => {
-  const { text, first, debounce, captureJobs, badge, jobPanel, runTask } = window.JP;
+  const { text, first, debounce, captureJobs, badge, jobPanel, runTask, isClosedText } = window.JP;
 
   function parseCard(card) {
     const link = card.querySelector("a[data-jk], a.jcs-JobTitle, h2.jobTitle a");
@@ -37,7 +37,7 @@
       if (!r) continue;
       card.querySelector(".jobpilot-badge")?.remove();
       const title = card.querySelector("h2.jobTitle, h2");
-      title?.insertAdjacentElement("afterend", badge(r.score, r.application_status));
+      title?.insertAdjacentElement("afterend", badge(r.score, r.application_status, r.closed));
     }
   }
 
@@ -62,6 +62,8 @@
       salary: text(first(document, ["#salaryInfoAndJobType span", "[data-testid='jobsearch-OtherJobDetailsContainer'] span"])),
       description: (descEl.innerText || "").trim(),
       apply_type: document.querySelector("#indeedApplyButton, [id*='indeedApplyButton']") ? "easy" : "external",
+      // Only the job pane, not the whole results page.
+      closed: isClosedText(text(descEl.closest(".jobsearch-JobComponent, #jobsearch-ViewjobPaneWrapper, main") || descEl.parentElement)),
     };
   }
 

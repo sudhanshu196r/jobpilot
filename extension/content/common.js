@@ -395,12 +395,16 @@
     return api("/api/ext/jobs", "POST", { jobs });
   }
 
-  function badge(score, status) {
+  // Mirrors CLOSED_RE in app/services/liveness.py.
+  const CLOSED_RE = /no longer (?:accepting applications|available|active|open)|(?:job|position|posting|vacancy|role) (?:has )?(?:expired|been filled|been closed|is closed|is no longer)|this job has expired|applications? (?:are |is )?(?:now )?closed/i;
+  const isClosedText = (t) => CLOSED_RE.test(String(t || "").slice(0, 30000));
+
+  function badge(score, status, closed = false) {
     const b = document.createElement("span");
     b.className = "jobpilot-badge";
     const color = score == null ? "#7a8191" : score >= 70 ? "#137a4b" : score >= 45 ? "#9a6200" : "#b42335";
-    b.textContent = status && status !== "queued" ? `JobPilot ${Math.round(score ?? 0)} · ${status}` : `JobPilot ${score == null ? "–" : Math.round(score)}`;
-    b.style.cssText = `display:inline-block;margin:4px 0;padding:1px 8px;border-radius:999px;font:600 11px/18px system-ui,sans-serif;color:#fff;background:${color};`;
+    b.textContent = closed ? "JobPilot · closed" : status && status !== "queued" ? `JobPilot ${Math.round(score ?? 0)} · ${status}` : `JobPilot ${score == null ? "–" : Math.round(score)}`;
+    b.style.cssText = `display:inline-block;margin:4px 0;padding:1px 8px;border-radius:999px;font:600 11px/18px system-ui,sans-serif;color:#fff;background:${closed ? "#7a8191" : color};`;
     return b;
   }
 
@@ -411,7 +415,7 @@
     if (!r) return;
     const s = r.score == null ? "–" : Math.round(r.score);
     setPanel(`<div class="row" style="align-items:center"><span class="score">${s}</span><div><div class="t">${esc(title)}</div><div class="m">${esc(company)}</div></div></div>
-      <div class="m">${r.application_status ? `Status: <b>${esc(r.application_status)}</b>` : "Match score against your profile."}</div>
+      <div class="m">${r.closed ? "<b>This posting looks closed</b> — it's hidden from your matches." : r.application_status ? `Status: <b>${esc(r.application_status)}</b>` : "Match score against your profile."}</div>
       <div class="row"><button class="a pr" data-q>Tailor resume &amp; queue</button><button class="a" data-mark>I applied</button></div>`, {
       "[data-q]": async (e) => {
         e.target.disabled = true; e.target.textContent = "Tailoring…";
@@ -445,5 +449,5 @@
   });
 
   window.JP = { send, api, text, first, visible, debounce, panel, setPanel, esc, collectFields, autofill, learnAnswers, runTask,
-    captureJobs, badge, jobPanel, fill, bestOption, labelOf };
+    captureJobs, badge, jobPanel, fill, bestOption, labelOf, isClosedText };
 })();

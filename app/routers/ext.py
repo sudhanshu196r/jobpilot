@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
 
 from ..db import get_session
-from ..models import Application, Job, Resume
+from ..models import Application, Job, Resume, utcnow
 from ..schemas import JobIn
 from ..services import answers as answers_svc
 from ..services import matcher, profile_utils, settings_store, store
@@ -47,6 +47,7 @@ class CapturedJob(BaseModel):
     posted_at: str = ""
     remote: bool | None = None
     apply_type: Literal["easy", "external", "unknown"] = "unknown"
+    closed: bool = False  # the page said applications are closed
 
 
 class CaptureBody(BaseModel):
@@ -56,8 +57,14 @@ class CaptureBody(BaseModel):
 @router.post("/jobs")
 def capture_jobs(body: CaptureBody, session: Session = Depends(get_session)):
     """Jobs read from a Naukri/Indeed page you are viewing. Returns scores for badges."""
-    items = [JobIn(**j.model_dump()) for j in body.jobs]
+    items = [JobIn(**j.model_dump(exclude={"closed"})) for j in body.jobs]
     touched, created = store.upsert_jobs(session, items)
+    closed_keys = {(j.source, j.external_id) for j in body.jobs if j.closed}
+    for job in touched:
+        if (job.source, job.external_id) in closed_keys:
+            job.closed_at = utcnow()
+            session.add(job)
+    session.commit()
     matcher.rescore(session, store.load_profile(session), touched)
     by_key = {(j.source, j.external_id): j for j in touched}
     results = []
@@ -69,7 +76,8 @@ def capture_jobs(body: CaptureBody, session: Session = Depends(get_session)):
         if job is not None:
             app_row = session.exec(select(Application).where(Application.job_id == job.id)).first()
             results.append({"external_id": j.external_id, "job_id": job.id, "score": job.score,
-                            "application_status": app_row.status if app_row else None})
+                            "application_status": app_row.status if app_row else None,
+                            "closed": job.closed_at is not None})
     return {"created": created, "results": results}
 
 

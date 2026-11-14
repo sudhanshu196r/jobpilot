@@ -1,7 +1,7 @@
 // Naukri: capture listings + job pages, show match badges, assist applying.
 // Naukri's class names change often, so every lookup has several fallbacks.
 (() => {
-  const { text, first, debounce, captureJobs, badge, jobPanel, runTask } = window.JP;
+  const { text, first, debounce, captureJobs, badge, jobPanel, runTask, isClosedText } = window.JP;
 
   const CARD_SELECTORS = ["div.srp-jobtuple-wrapper", "article.jobTuple", "div.cust-job-tuple", "[data-job-id]"];
 
@@ -49,7 +49,7 @@
       if (!r) continue;
       card.querySelector(".jobpilot-badge")?.remove();
       const anchor = card.querySelector("a.title, a[class*='title']");
-      anchor?.parentElement?.insertAdjacentElement("afterend", badge(r.score, r.application_status));
+      anchor?.parentElement?.insertAdjacentElement("afterend", badge(r.score, r.application_status, r.closed));
     }
   }
 
@@ -72,6 +72,7 @@
       salary: text(first(document, ["[class*='jhc__salary']", "[class*='salary'] span"])),
       description: [desc, skills.length ? `Key skills: ${skills.join(", ")}` : ""].filter(Boolean).join("\n\n"),
       apply_type: external ? "external" : "easy",
+      closed: isClosedText(text(document.querySelector("main, #root") || document.body)),
     };
   }
 

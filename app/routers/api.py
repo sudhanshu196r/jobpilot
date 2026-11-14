@@ -16,7 +16,9 @@ from ..db import get_session
 from ..models import APPLICATION_STATUSES, JOB_STATUSES, Answer, Application, Job, Profile, Resume, utcnow
 from ..schemas import JobIn, ProfileData, ResumeDoc
 from ..services import answers as answers_svc
-from ..services import matcher, profile_parser, profile_utils, settings_store, store, tailor
+from datetime import timedelta
+
+from ..services import alerts, liveness, matcher, profile_parser, profile_utils, settings_store, store, tailor
 from ..services.llm import LLMError, get_llm
 
 router = APIRouter(prefix="/api")
@@ -140,6 +142,8 @@ def list_jobs(
     status: str = Query(default="active"),
     min_score: float = 0,
     remote: bool | None = None,
+    include_closed: bool = False,
+    new_within_days: int | None = Query(default=None, ge=1, le=365),
     sort: Literal["score", "recent", "company"] = "score",
     limit: int = Query(default=50, le=500),
     offset: int = 0,
@@ -148,8 +152,15 @@ def list_jobs(
     stmt = select(Job)
     if status == "active":
         stmt = stmt.where(Job.status != "hidden")
+    elif status == "closed":
+        stmt = stmt.where(col(Job.closed_at).is_not(None))
+        include_closed = True
     elif status in JOB_STATUSES:
         stmt = stmt.where(Job.status == status)
+    if not include_closed:
+        stmt = stmt.where(col(Job.closed_at).is_(None))
+    if new_within_days:
+        stmt = stmt.where(Job.fetched_at >= utcnow() - timedelta(days=new_within_days))
     if source:
         stmt = stmt.where(Job.source == source)
     if min_score:
@@ -410,10 +421,55 @@ def bulk_apply(body: BulkApply, background: BackgroundTasks, session: Session = 
     """Queue many jobs: a tailored resume is prepared for each in the background."""
     if not store.has_profile(session):
         raise HTTPException(400, "Add your profile first (Profile tab).")
-    apps = store.queue_applications(session, body.job_ids)
+    closed = {j.id for j in session.exec(select(Job).where(col(Job.id).in_(body.job_ids),
+                                                             col(Job.closed_at).is_not(None))).all()}
+    apps = store.queue_applications(session, [i for i in body.job_ids if i not in closed])
     to_prepare = [a.id for a in apps if a.status == "preparing"]
     background.add_task(store.prepare_applications, to_prepare, body.use_llm, body.cover_letter)
-    return {"queued": len(to_prepare), "skipped_already_applied": len(apps) - len(to_prepare)}
+    return {"queued": len(to_prepare), "skipped_already_applied": len(apps) - len(to_prepare),
+            "skipped_closed": len(closed)}
+
+
+# --------------------------------------------------------------------------- liveness
+
+
+class CheckBody(BaseModel):
+    job_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+@router.post("/jobs/{job_id}/check")
+def check_job(job_id: int, session: Session = Depends(get_session)):
+    """Is this posting still open? Re-fetches its page."""
+    job = session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    status = liveness.check_jobs(session, [job])[job.id]
+    return {"status": status, "job": store.job_dict(job)}
+
+
+@router.post("/jobs/check")
+def check_jobs(body: CheckBody, session: Session = Depends(get_session)):
+    jobs = session.exec(select(Job).where(col(Job.id).in_(body.job_ids))).all()
+    result = liveness.check_jobs(session, list(jobs))
+    counts = {k: sum(1 for v in result.values() if v == k) for k in ("open", "closed", "unknown")}
+    return {"results": result, **counts}
+
+
+# --------------------------------------------------------------------------- alerts
+
+
+@router.post("/alerts/test")
+def alerts_test(session: Session = Depends(get_session)):
+    try:
+        alerts.send_test(session)
+    except alerts.AlertError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@router.post("/alerts/send-now")
+def alerts_send_now(session: Session = Depends(get_session)):
+    return alerts.notify_new_matches(session)
 
 
 @router.get("/applications")
@@ -518,7 +574,10 @@ def get_settings(session: Session = Depends(get_session)):
 
 @router.put("/settings")
 def put_settings(body: dict, session: Session = Depends(get_session)):
+    was_on = settings_store.get(session, "alerts").get("enabled")
     settings_store.update_settings(session, body)
+    if not was_on and settings_store.get(session, "alerts").get("enabled"):
+        alerts.baseline(session)  # alert on jobs found from now on, not the backlog
     return get_settings(session)
 
 
@@ -543,14 +602,38 @@ def test_llm(session: Session = Depends(get_session)):
     return {"ok": True, "model": llm.model}
 
 
+@router.get("/mcp-config")
+def mcp_config():
+    """What to paste into an MCP client (Claude Desktop / Claude Code) to connect it."""
+    import sys
+
+    from ..config import ROOT_DIR
+
+    script = str(ROOT_DIR / "jobpilot_mcp.py")
+    python = sys.executable
+    return {
+        "python": python,
+        "script": script,
+        "claude_desktop": {"mcpServers": {"jobpilot": {"command": python, "args": [script]}}},
+        "claude_code": f'claude mcp add jobpilot -- "{python}" "{script}"',
+    }
+
+
 @router.get("/stats")
 def stats(session: Session = Depends(get_session)):
-    jobs = session.exec(select(func.count()).select_from(Job).where(Job.status != "hidden")).one()
-    strong = session.exec(select(func.count()).select_from(Job).where(Job.status != "hidden", Job.score >= 70)).one()
+    open_ = (Job.status != "hidden", col(Job.closed_at).is_(None))
+    jobs = session.exec(select(func.count()).select_from(Job).where(*open_)).one()
+    strong = session.exec(select(func.count()).select_from(Job).where(*open_, Job.score >= 70)).one()
     by_status = dict(session.exec(select(Application.status, func.count()).group_by(Application.status)).all())
     resumes = session.exec(select(func.count()).select_from(Resume)).one()
+    week = utcnow() - timedelta(days=7)
+    new_matches = session.exec(select(func.count()).select_from(Job).where(
+        Job.status != "hidden", col(Job.closed_at).is_(None), Job.score >= 70, Job.fetched_at >= week)).one()
+    closed = session.exec(select(func.count()).select_from(Job).where(col(Job.closed_at).is_not(None))).one()
     return {
         "jobs": jobs, "strong_matches": strong, "resumes": resumes, "applications": by_status,
+        "new_matches_7d": new_matches, "closed_jobs": closed,
+        "alerts_enabled": bool(settings_store.get(session, "alerts").get("enabled")),
         "profile_ready": store.has_profile(session),
         "ai_enabled": get_llm(session) is not None,
         "last_ingest": settings_store.get(session, "last_ingest"),

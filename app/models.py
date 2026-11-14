@@ -45,6 +45,11 @@ class Job(SQLModel, table=True):
     score_detail: str = Field(default="{}", sa_column=Column(Text, nullable=False, default="{}"))
     fetched_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+    # Liveness: set when the posting disappears from its board or its page says it's closed.
+    closed_at: datetime | None = Field(default=None, index=True)
+    last_checked_at: datetime | None = None
+    # New-match email alerts: True once this job was included in (or predates) an alert.
+    alerted: bool = Field(default=False, index=True)
 
 
 class Resume(SQLModel, table=True):

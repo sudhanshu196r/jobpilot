@@ -2,7 +2,7 @@
 // All dynamic text goes through esc(); job descriptions come from third parties.
 
 // Must equal __version__ in app/__init__.py (checked by a test).
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
@@ -156,7 +156,7 @@ routes.dashboard = async () => {
       <div class="row"><button id="fetch" class="primary">Fetch new jobs</button></div></div>
     <div class="grid cols-4">
       <div class="card stat"><div class="num">${s.jobs}</div><div class="lbl">Jobs tracked</div></div>
-      <div class="card stat"><div class="num">${s.strong_matches}</div><div class="lbl">Strong matches (70+)</div></div>
+      <div class="card stat"><div class="num">${s.strong_matches}</div><div class="lbl">Strong matches (70+)${s.new_matches_7d ? ` · <a href="#/jobs" data-fresh7>${s.new_matches_7d} new this week</a>` : ""}</div></div>
       <div class="card stat"><div class="num">${(a.queued || 0) + (a.preparing || 0) + (a.in_progress || 0)}</div><div class="lbl">In apply queue</div></div>
       <div class="card stat"><div class="num">${(a.applied || 0) + (a.interview || 0) + (a.offer || 0) + (a.rejected || 0)}</div><div class="lbl">Applied</div></div>
     </div>
@@ -166,6 +166,7 @@ routes.dashboard = async () => {
         <li><span class="dot ${s.ai_enabled ? "on" : ""}"></span><div class="spacer">Claude API key for AI tailoring <span class="muted small">(optional)</span></div><a href="#/settings">Settings</a></li>
         <li><span class="dot ${hasSources ? "on" : ""}"></span><div class="spacer">Job sources (company boards, Adzuna, Remotive)</div><a href="#/settings">Configure</a></li>
         <li><span class="dot"></span><div class="spacer">Browser extension for Naukri &amp; Indeed</div><a href="#/settings">Install guide</a></li>
+        <li><span class="dot ${s.alerts_enabled ? "on" : ""}"></span><div class="spacer">Email alerts for new matches <span class="muted small">(optional)</span></div><a href="#/settings">${s.alerts_enabled ? "On" : "Set up"}</a></li>
       </ul></div>
       <div class="card"><h2>Last fetch</h2>${li ? `
         <p>${fmtDate(li.at)} — <b>${li.new}</b> new of ${li.fetched} fetched from ${li.sources} source(s).</p>
@@ -181,8 +182,18 @@ routes.dashboard = async () => {
     toast(`Fetched ${r.fetched} jobs, ${r.new} new.${r.errors.length ? ` ${r.errors.length} source error(s).` : ""}`, r.errors.length > 0 && !r.fetched);
     router();
   });
+  $("[data-fresh7]")?.addEventListener("click", () => { jobsState.fresh = "7"; jobsState.min_score = 70; });
   $(".job-list").addEventListener("click", (e) => { const el = e.target.closest("[data-job]"); if (el) openJob(Number(el.dataset.job)); });
 };
+
+const ageLabel = (days) => (days == null ? "" : days === 0 ? "today" : days < 30 ? `${days}d ago` : `${Math.floor(days / 30)}mo ago`);
+function freshPills(j) {
+  const f = j.freshness || {};
+  if (f.closed) return `<span class="pill bad" title="No longer accepting applications">closed</span>`;
+  const isNew = j.fetched_at && Date.now() - new Date(j.fetched_at).getTime() < 864e5;
+  return `${isNew ? `<span class="pill accent">new</span>` : ""}${f.stale ? `<span class="pill warn" title="Posted over a month ago; may be filled">stale</span>` : ""}
+    <span class="small muted" title="Posting age">${ageLabel(f.age_days)}</span>`;
+}
 
 function jobRow(j, selectable = false, selected = false) {
   const d = j.score_detail || {};
@@ -196,7 +207,7 @@ function jobRow(j, selectable = false, selected = false) {
       <div class="chips" style="margin-top:6px">${matched.map((s) => `<span class="pill good">${esc(s)}</span>`).join("")}
         ${(d.missing_skills || []).slice(0, 3).map((s) => `<span class="pill">${esc(s)}</span>`).join("")}</div>
     </div>
-    <div class="side"><span class="pill">${esc(j.source)}</span>
+    <div class="side"><div class="row" style="gap:4px;justify-content:flex-end">${freshPills(j)}<span class="pill">${esc(j.source)}</span></div>
       ${j.application ? statusPill(j.application.status) : j.status === "shortlisted" ? `<span class="pill accent">shortlisted</span>` : ""}
       ${d.excluded ? `<span class="pill bad">excluded</span>` : ""}</div>
   </div>`;
@@ -220,15 +231,18 @@ async function openJob(id, onChange) {
       <div><h1>${esc(j.title)}</h1><div class="muted">${esc(j.company)} · ${esc(j.location || "Location n/a")}${j.salary ? " · " + esc(j.salary) : ""}</div>
       <div class="row small" style="margin-top:6px"><span class="pill">${esc(j.source)}</span>${j.application ? statusPill(j.application.status) : ""}
         ${j.url ? `<a href="${esc(j.url)}" target="_blank" rel="noopener noreferrer">Open posting ↗</a>` : ""}</div></div></div>
+    ${j.freshness?.closed ? `<div class="import-result" style="border-color:var(--bad);background:var(--bad-soft);margin-top:12px">This posting looks <b>closed</b> (taken down or no longer accepting applications). It's hidden from your matches and won't be queued.</div>` : ""}
     <div class="row" style="margin:16px 0">
-      <button class="primary" data-act="queue">Tailor resume &amp; add to queue</button>
+      <button class="primary" data-act="queue" ${j.freshness?.closed ? "disabled title=\"This posting is closed\"" : ""}>Tailor resume &amp; add to queue</button>
       <button data-act="resume">Tailor resume only</button>
       <button data-act="assess">AI fit check</button>
       <span class="spacer"></span>
       <button class="sm" data-act="shortlist">${j.status === "shortlisted" ? "Unshortlist" : "Shortlist"}</button>
       <button class="sm" data-act="hide">${j.status === "hidden" ? "Unhide" : "Hide"}</button>
+      <button class="sm" data-act="check" title="Re-fetch the posting to see if it still accepts applications">Still open?</button>
     </div>
-    ${d.reasons?.length ? `<p class="small">${d.reasons.map(esc).join(" · ")}</p>` : ""}
+    <p class="small">${[`Posted ${ageLabel(j.freshness?.age_days)}`, ...(j.freshness?.stale ? ["may already be filled"] : []), ...(d.reasons || [])].map(esc).join(" · ")}
+      ${j.last_checked_at ? `<span class="muted"> · checked ${fmtDate(j.last_checked_at)}</span>` : ""}</p>
     <div class="grid cols-2">
       <div class="card"><h3>Score breakdown</h3><div class="bars">${Object.entries(W).map(([k, w]) =>
         `<span>${k} <span class="muted">(${w})</span></span><div class="bar"><i style="width:${Math.round((comps[k] || 0) * 100)}%"></i></div><span>${Math.round((comps[k] || 0) * w)}</span>`).join("")}</div></div>
@@ -257,6 +271,11 @@ async function openJob(id, onChange) {
       const r = await api(`/api/jobs/${id}/assess`, { method: "POST" });
       $("#assessment").innerHTML = assessmentHtml(r);
     });
+    if (act === "check") await busy(btn, async () => {
+      const r = await api(`/api/jobs/${id}/check`, { method: "POST" });
+      toast(r.status === "closed" ? "Closed — hidden from your matches" : r.status === "open" ? "Still open" : "Couldn't tell (the site blocked the check). Open the posting to see.");
+      onChange?.(); openJob(id, onChange);
+    });
     if (act === "shortlist" || act === "hide") await busy(btn, async () => {
       const target = act === "shortlist" ? (j.status === "shortlisted" ? "new" : "shortlisted") : (j.status === "hidden" ? "new" : "hidden");
       await api(`/api/jobs/${id}`, { method: "PATCH", body: { status: target } });
@@ -273,7 +292,7 @@ const assessmentHtml = (a) => `<div class="card" style="margin-top:16px"><div cl
 
 // --------------------------------------------------------------------------- jobs
 
-const jobsState = { q: "", source: "", status: "active", min_score: 0, sort: "score", remote: "", offset: 0, selected: new Set() };
+const jobsState = { q: "", source: "", status: "active", min_score: 0, sort: "score", remote: "", fresh: "", offset: 0, selected: new Set() };
 routes.jobs = async () => {
   view.innerHTML = `
     <div class="page-head"><div><h1>Jobs</h1><p class="muted">Ranked against your profile. Select several and queue them in one go.</p></div>
@@ -281,8 +300,10 @@ routes.jobs = async () => {
     <div class="toolbar">
       <input type="search" id="f-q" placeholder="Search title, company, skill…" value="${esc(jobsState.q)}">
       <select id="f-source" aria-label="Source"><option value="">All sources</option></select>
-      <select id="f-status" aria-label="Status">${[["active", "Active"], ["new", "New"], ["shortlisted", "Shortlisted"], ["hidden", "Hidden"], ["all", "All"]]
+      <select id="f-status" aria-label="Status">${[["active", "Active"], ["new", "New"], ["shortlisted", "Shortlisted"], ["hidden", "Hidden"], ["closed", "Closed"], ["all", "All"]]
         .map(([v, l]) => `<option value="${v}" ${jobsState.status === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select id="f-fresh" aria-label="Found within">${[["", "Any time"], ["1", "Found today"], ["3", "Last 3 days"], ["7", "Last 7 days"], ["30", "Last 30 days"]]
+        .map(([v, l]) => `<option value="${v}" ${jobsState.fresh === v ? "selected" : ""}>${l}</option>`).join("")}</select>
       <select id="f-remote" aria-label="Remote"><option value="">Any location</option><option value="true" ${jobsState.remote === "true" ? "selected" : ""}>Remote only</option></select>
       <label class="check">Min score <input type="number" id="f-min" min="0" max="100" step="5" value="${jobsState.min_score}" style="width:70px"></label>
       <select id="f-sort" aria-label="Sort">${[["score", "Best match"], ["recent", "Newest"], ["company", "Company"]]
@@ -296,6 +317,8 @@ routes.jobs = async () => {
     const p = new URLSearchParams({ q: jobsState.q, source: jobsState.source, status: jobsState.status === "all" ? "" : jobsState.status,
       min_score: jobsState.min_score || 0, sort: jobsState.sort, limit: 50, offset: jobsState.offset });
     if (jobsState.remote) p.set("remote", jobsState.remote);
+    if (jobsState.fresh) p.set("new_within_days", jobsState.fresh);
+    if (jobsState.status === "all") p.set("include_closed", "true");
     const r = await api(`/api/jobs?${p}`);
     const srcSel = $("#f-source");
     if (srcSel.options.length <= 1) r.sources.forEach((s) => srcSel.add(new Option(s, s, false, s === jobsState.source)));
@@ -317,13 +340,14 @@ routes.jobs = async () => {
     bar.innerHTML = `<b>${n} selected</b><span class="spacer"></span>
       <label class="check" style="color:inherit"><input type="checkbox" id="b-cover"> cover letters</label>
       <button data-bulk="shortlisted">Shortlist</button><button data-bulk="hidden">Hide</button>
-      <button data-bulk="clear">Clear</button><button class="primary" data-bulk="queue">Tailor resumes &amp; queue ${n}</button>`;
+      <button data-bulk="check" title="Re-fetch each posting to see if it is still open">Still open?</button><button data-bulk="clear">Clear</button><button class="primary" data-bulk="queue">Tailor resumes &amp; queue ${n}</button>`;
   };
   let t;
   $("#f-q").oninput = (e) => { clearTimeout(t); t = setTimeout(() => { jobsState.q = e.target.value; jobsState.offset = 0; load(); }, 250); };
   $("#f-source").onchange = (e) => { jobsState.source = e.target.value; jobsState.offset = 0; load(); };
   $("#f-status").onchange = (e) => { jobsState.status = e.target.value; jobsState.offset = 0; load(); };
   $("#f-remote").onchange = (e) => { jobsState.remote = e.target.value; jobsState.offset = 0; load(); };
+  $("#f-fresh").onchange = (e) => { jobsState.fresh = e.target.value; jobsState.offset = 0; load(); };
   $("#f-min").onchange = (e) => { jobsState.min_score = Number(e.target.value) || 0; jobsState.offset = 0; load(); };
   $("#f-sort").onchange = (e) => { jobsState.sort = e.target.value; load(); };
   $("#pager").onclick = (e) => { const b = e.target.closest("[data-page]"); if (b) { jobsState.offset = Number(b.dataset.page) * 50; load(); } };
@@ -343,9 +367,14 @@ routes.jobs = async () => {
     if (!b) return;
     const ids = [...jobsState.selected];
     if (b.dataset.bulk === "clear") { jobsState.selected.clear(); return load(); }
+    if (b.dataset.bulk === "check") return busy(b, async () => {
+      const r = await api("/api/jobs/check", { method: "POST", body: { job_ids: ids.slice(0, 100) } });
+      toast(`${r.open} open, ${r.closed} closed${r.unknown ? `, ${r.unknown} couldn't be checked` : ""}`);
+      load();
+    });
     if (b.dataset.bulk === "queue") return busy(b, async () => {
       const r = await api("/api/applications/bulk", { method: "POST", body: { job_ids: ids, use_llm: true, cover_letter: $("#b-cover").checked } });
-      toast(`Queued ${r.queued}. Tailoring resumes in the background…${r.skipped_already_applied ? ` (${r.skipped_already_applied} already applied)` : ""}`);
+      toast(`Queued ${r.queued}. Tailoring resumes in the background…${r.skipped_already_applied ? ` (${r.skipped_already_applied} already applied)` : ""}${r.skipped_closed ? ` ${r.skipped_closed} closed posting(s) skipped.` : ""}`);
       jobsState.selected.clear();
       location.hash = "#/applications";
     });
@@ -727,7 +756,8 @@ routes.answers = async () => {
 // --------------------------------------------------------------------------- settings
 
 routes.settings = async () => {
-  const s = await api("/api/settings");
+  const [s, mcp] = await Promise.all([api("/api/settings"), api("/api/mcp-config")]);
+  const al = s.alerts;
   const src = s.sources;
   const list = (arr) => esc((arr || []).join(", "));
   view.innerHTML = `<div class="page-head"><div><h1>Settings</h1><p class="muted">Stored locally in your JobPilot database.</p></div>
@@ -762,6 +792,30 @@ routes.settings = async () => {
       <div class="form-grid" style="margin-top:12px"><label class="field">Auto-fetch every (hours, 0 = off)<input id="int" type="number" min="0" step="1" value="${esc(s.ingest.interval_hours)}"></label>
         <label class="field">Forget unsaved jobs after (days)<input id="age" type="number" min="0" value="${esc(s.ingest.max_age_days)}"></label></div></div>
 
+    <div class="card"><h2>New-match email alerts</h2>
+      <p class="small muted">After each fetch, JobPilot emails you newly found, still-open jobs that score at least your threshold — one digest, never the same job twice.
+        Gmail: turn on 2-Step Verification, create an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password ↗</a> and use it below (not your normal password).</p>
+      <div class="form-grid">
+        <label class="check" style="align-self:end"><input type="checkbox" id="al-on" ${al.enabled ? "checked" : ""}> Alerts enabled</label>
+        <label class="field">Send to<input id="al-to" type="email" value="${esc(al.email_to)}" placeholder="you@gmail.com"></label>
+        <label class="field">Minimum score<input id="al-min" type="number" min="0" max="100" step="5" value="${esc(al.min_score)}"></label>
+        <label class="field">Max jobs per email<input id="al-max" type="number" min="1" max="50" value="${esc(al.max_items)}"></label>
+        <label class="field">SMTP server<input id="al-host" value="${esc(al.smtp.host)}" placeholder="smtp.gmail.com"></label>
+        <label class="field">Port<input id="al-port" type="number" value="${esc(al.smtp.port)}"></label>
+        <label class="field">Username<input id="al-user" value="${esc(al.smtp.username)}" placeholder="you@gmail.com" autocomplete="off"></label>
+        <label class="field">Password / App Password<input id="al-pass" type="password" value="${esc(al.smtp.password)}" autocomplete="off"></label>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="sm" id="al-test">Send test email</button>
+        <span class="small muted">Save settings first. Turning alerts on won't email jobs you already have.</span></div></div>
+
+    <div class="card"><h2>AI assistant (MCP)</h2>
+      <p class="small muted">Connect Claude (or any MCP client) to JobPilot, then just ask: “show my best new remote matches”, “tailor a resume for job 42”, “queue the top 5”, “mark Acme as interview”.
+        It reads the same local database; JobPilot doesn't need to be open. You still submit applications yourself.</p>
+      <p class="small"><b>Claude Code</b> — run in a terminal:</p>
+      <div class="row"><div class="token mono spacer" id="mcp-cc">${esc(mcp.claude_code)}</div><button class="sm" data-copy="mcp-cc">Copy</button></div>
+      <p class="small" style="margin-top:10px"><b>Claude Desktop</b> — Settings → Developer → Edit Config, and add to <code>claude_desktop_config.json</code>, then restart Claude:</p>
+      <div class="row" style="align-items:flex-start"><pre class="token mono spacer" id="mcp-cd" style="margin:0;white-space:pre-wrap">${esc(JSON.stringify(mcp.claude_desktop, null, 2))}</pre><button class="sm" data-copy="mcp-cd">Copy</button></div></div>
+
     <div class="card"><h2>Browser extension (Naukri, Indeed, company ATS forms)</h2>
       <ol class="steps"><li>Open <code>chrome://extensions</code>, turn on <b>Developer mode</b>, click <b>Load unpacked</b> and choose the <code>extension</code> folder of JobPilot.</li>
         <li>Click the JobPilot icon → paste this server address and token → <b>Connect</b>.</li>
@@ -780,12 +834,19 @@ routes.settings = async () => {
         adzuna: { enabled: $("#az-on").checked, app_id: $("#az-id").value.trim(), app_key: $("#az-key").value.trim(), country: $("#az-c").value,
           where: $("#az-w").value.trim(), queries: split($("#az-q").value), max_pages: Number($("#az-p").value) || 1 } },
       ingest: { interval_hours: Number($("#int").value) || 0, max_age_days: Number($("#age").value) || 0 },
+      alerts: { enabled: $("#al-on").checked, email_to: $("#al-to").value.trim(), min_score: Number($("#al-min").value) || 0,
+        max_items: Number($("#al-max").value) || 15,
+        smtp: { host: $("#al-host").value.trim(), port: Number($("#al-port").value) || 587, username: $("#al-user").value.trim(),
+          password: $("#al-pass").value } },
     };
     if (!$("#llm-key").disabled) body.llm.api_key = $("#llm-key").value.trim();
     await api("/api/settings", { method: "PUT", body });
     toast("Settings saved"); refreshAiBadge(); router();
   });
   $("#test").onclick = (e) => busy(e.currentTarget, async () => { const r = await api("/api/settings/test-llm", { method: "POST" }); toast(`Connected to ${r.model}`); });
+  $("#al-test").onclick = (e) => busy(e.currentTarget, async () => { await api("/api/alerts/test", { method: "POST" }); toast("Test email sent — check your inbox"); });
+  view.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = () =>
+    navigator.clipboard.writeText($("#" + b.dataset.copy).textContent).then(() => toast("Copied"))));
   $("#copy").onclick = () => navigator.clipboard.writeText($("#tok").textContent).then(() => toast("Token copied"));
   $("#rotate").onclick = async () => {
     if (!confirm("Rotate the token? The extension will need the new one.")) return;

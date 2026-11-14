@@ -30,6 +30,33 @@ Then open **http://127.0.0.1:8765**.
 4. **Install the extension** (below) and browse Naukri and Indeed as usual. Jobs are captured and get a match badge.
 5. **Jobs:** filter, select several, and click **Tailor resumes & queue**.
 6. **Extension → Start applying.** It works through the queue one job at a time.
+7. *(Optional)* **Settings → New-match email alerts** to get a digest whenever new jobs match you, and **Settings → AI assistant (MCP)** to manage your search from Claude.
+
+## Fresh jobs, alerts and your AI assistant
+
+**Only live, fresh postings.** Every job shows how old it is (*new*, *4d ago*; *stale* after 30 days) and you can filter by *Found today / last 3 / 7 / 30 days*. Ghost jobs are caught three ways:
+- a Greenhouse, Lever or Ashby posting that disappears from its company's board feed is marked **closed** on the next fetch (and reopened if it comes back);
+- the extension spots "no longer accepting applications" on Naukri and Indeed pages;
+- **Still open?** (in a job or for a selection) re-checks the posting. A site that blocks the check is reported as *unknown*, never closed.
+
+Closed jobs are hidden from matches, can't be queued, and are listed under *Closed*.
+
+**New-match email alerts.** After each fetch (manual or the automatic one every few hours), JobPilot emails one digest of newly found, still-open jobs that score at least your threshold, and never the same job twice. It works with any mailbox over SMTP. For Gmail, use an [App Password](https://myaccount.google.com/apppasswords) with `smtp.gmail.com`, port 587. Turning alerts on doesn't email the jobs you already have.
+
+**Use JobPilot from Claude (MCP).** JobPilot includes an [MCP](https://modelcontextprotocol.io) server, so Claude can search your matches, explain fits, tailor resumes, queue applications and update your tracker in conversation. Try "show my best new remote matches from this week", "tailor a resume for job 42", "queue the top 5" or "mark the Acme application as interview". **Settings → AI assistant (MCP)** shows the exact command for your computer:
+
+```bash
+# Claude Code
+claude mcp add jobpilot -- "/path/to/jobpilot/.venv/bin/python" "/path/to/jobpilot/jobpilot_mcp.py"
+```
+
+```json
+// Claude Desktop: Settings → Developer → Edit Config (claude_desktop_config.json), then restart Claude
+{ "mcpServers": { "jobpilot": { "command": "/path/to/jobpilot/.venv/bin/python",
+                               "args": ["/path/to/jobpilot/jobpilot_mcp.py"] } } }
+```
+
+Tools: `search_jobs`, `get_job`, `get_profile`, `tailor_resume`, `queue_applications`, `list_applications`, `update_application`, `list_resumes`, `fetch_new_jobs`, `check_job_open`. The server reads the same local database, so the web app doesn't need to be running. Submitting applications stays with you and the extension.
 
 ## Installing the browser extension
 
@@ -60,10 +87,13 @@ app/                     FastAPI backend + web UI (no build step)
     tailor.py            tailored resume + anti-fabrication checks + cover letter
     render.py            ATS-friendly PDF (ReportLab) and DOCX
     answers.py           screening-question memory, profile facts, AI drafts
+    liveness.py          posting age, board sync and "still open?" checks (ghost-job detection)
+    alerts.py            new-match email digests over SMTP
     sources/             Greenhouse, Lever, Ashby, Remotive, Adzuna clients
     store.py             persistence, dedupe across sources, background resume preparation
   routers/api.py         UI API
   routers/ext.py         extension API (token-protected)
+  mcp_server.py          MCP server for Claude and other assistants (run via jobpilot_mcp.py)
 extension/               Chrome MV3 extension (capture, badges, queue runner, autofill)
 tests/                   pytest suite (services, API flow, mocked Claude integration)
 ```
@@ -118,7 +148,7 @@ Site markup changes from time to time. If badges stop appearing on Naukri or Ind
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 28 tests
+.venv/bin/python -m pytest -q          # 45 tests
 .venv/bin/python -m app                # or: uvicorn app.main:app --reload --port 8765
 ```
 
@@ -132,4 +162,6 @@ Data lives in `./data` (SQLite database + generated resumes). Back it up, or del
 | "No text could be extracted" on import | The PDF is a scan. Paste the text instead |
 | Resume upload not attached on a site | Some sites use custom upload widgets. Drag the PDF from the Applications page instead |
 | Adzuna errors | Check the app ID and key. The free tier is rate limited, so lower the pages per query |
+| Alert test email fails with a login error | Gmail and Outlook need an App Password, not your normal password |
+| Claude doesn't show the JobPilot tools | Use the exact paths from Settings → AI assistant, then fully restart Claude Desktop |
 | AI features failing | Settings → **Test connection**. Everything falls back to the built-in engine automatically |
