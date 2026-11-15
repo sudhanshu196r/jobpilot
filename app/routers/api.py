@@ -511,6 +511,120 @@ def bulk_apply(body: BulkApply, background: BackgroundTasks, session: Session = 
             "skipped_closed": len(closed)}
 
 
+# --------------------------------------------------------------------------- apply from JobPilot
+
+
+def _job_or_404(session: Session, job_id: int) -> Job:
+    job = session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    return job
+
+
+@router.get("/jobs/{job_id}/apply-info")
+def apply_info(job_id: int, session: Session = Depends(get_session)):
+    """Everything the Apply screen shows: form questions (Greenhouse) pre-answered, resume, status."""
+    from ..services import apply as apply_svc
+
+    job = _job_or_404(session, job_id)
+    app_row = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    saved = json.loads(app_row.answers or "{}") if app_row else {}
+    fields = apply_svc.greenhouse_questions(job)
+    form = None
+    if fields is not None:
+        form = apply_svc.prefill(session, store.load_profile(session), fields, job, get_llm(session), saved)
+    resume = session.get(Resume, app_row.resume_id) if app_row and app_row.resume_id else None
+    return {
+        "apply_url": apply_svc.apply_url(job),
+        "can_auto_submit": apply_svc.can_auto_submit(job),
+        "form": form,
+        "application": store.application_dict(session, app_row) if app_row else None,
+        "resume": store.resume_dict(resume) if resume else None,
+    }
+
+
+class PrepareApply(BaseModel):
+    use_llm: bool = True
+    cover_letter: bool = False
+
+
+@router.post("/jobs/{job_id}/prepare-apply")
+def prepare_apply(job_id: int, body: PrepareApply, session: Session = Depends(get_session)):
+    """Create the application and its tailored resume now (not in the background)."""
+    job = _job_or_404(session, job_id)
+    if job.closed_at is not None:
+        raise HTTPException(400, "This posting is closed.")
+    if not store.has_profile(session):
+        raise HTTPException(400, "Add your profile first (Profile tab).")
+    apps = store.queue_applications(session, [job_id])
+    if apps and apps[0].status == "preparing":
+        store.prepare_applications([apps[0].id], body.use_llm, body.cover_letter)
+    session.expire_all()
+    app_row = session.exec(select(Application).where(Application.job_id == job_id)).first()
+    if app_row.status == "failed":
+        raise HTTPException(500, app_row.error or "Couldn't prepare the application.")
+    return store.application_dict(session, app_row)
+
+
+class AnswersBody(BaseModel):
+    answers: dict[str, str] = Field(default_factory=dict)  # field name -> value
+    labels: dict[str, str] = Field(default_factory=dict)  # field name -> question text (to remember answers)
+    auto_submit: bool = False
+
+
+@router.put("/applications/{app_id}/answers")
+def save_application_answers(app_id: int, body: AnswersBody, session: Session = Depends(get_session)):
+    from ..services import apply as apply_svc
+
+    a = session.get(Application, app_id)
+    if a is None:
+        raise HTTPException(404, "Application not found")
+    job = session.get(Job, a.job_id)
+    a.answers = json.dumps({k: v for k, v in body.answers.items() if v not in ("", None)})
+    a.auto_submit = bool(body.auto_submit and job is not None and apply_svc.can_auto_submit(job))
+    a.updated_at = utcnow()
+    session.add(a)
+    session.commit()
+    # Remember reviewed answers for other applications too (profile facts are skipped).
+    answers_svc.save_answers(session, [{"label": body.labels[k], "answer": v} for k, v in body.answers.items()
+                                       if k in body.labels and v], store.load_profile(session))
+    return store.application_dict(session, a)
+
+
+@router.post("/applications/{app_id}/follow-up")
+def mark_followed_up(app_id: int, session: Session = Depends(get_session)):
+    a = session.get(Application, app_id)
+    if a is None:
+        raise HTTPException(404, "Application not found")
+    a.followed_up_at = utcnow()
+    a.notes = (a.notes + f"\nFollowed up {utcnow():%d %b %Y}").strip()
+    a.updated_at = utcnow()
+    session.add(a)
+    session.commit()
+    return store.application_dict(session, a)
+
+
+@router.post("/jobs/{job_id}/interview-prep")
+def interview_prep(job_id: int, session: Session = Depends(get_session)):
+    from ..services import interview
+
+    job = _job_or_404(session, job_id)
+    prep, method = interview.prepare(job, store.load_profile(session), get_llm(session))
+    detail = json.loads(job.score_detail or "{}")
+    detail["interview_prep"] = {**prep.model_dump(), "method": method}
+    job.score_detail = json.dumps(detail)
+    session.add(job)
+    session.commit()
+    return detail["interview_prep"]
+
+
+@router.get("/analytics")
+def analytics(session: Session = Depends(get_session)):
+    from ..services import analytics as analytics_svc
+
+    return analytics_svc.dashboard(session)
+
+
 # --------------------------------------------------------------------------- liveness
 
 

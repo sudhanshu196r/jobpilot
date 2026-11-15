@@ -32,6 +32,22 @@ async function getState() {
   const { queue } = await chrome.storage.session.get("queue");
   return queue || { running: false, tabId: null, current: null, done: 0, skipped: 0 };
 }
+// Tell open JobPilot tabs that something changed, so they refresh.
+async function notifyJobPilot(detail) {
+  const { server } = await config();
+  const tabs = await chrome.tabs.query({ url: `${server.replace(/\/$/, "")}/*` }).catch(() => []);
+  for (const t of tabs) chrome.tabs.sendMessage(t.id, { type: "jobpilotChanged", detail }).catch(() => {});
+}
+
+async function focusJobPilot() {
+  const { server } = await config();
+  const [tab] = await chrome.tabs.query({ url: `${server.replace(/\/$/, "")}/*` }).catch(() => []);
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+}
+
 async function setState(patch) {
   const next = { ...(await getState()), ...patch };
   await chrome.storage.session.set({ queue: next });
@@ -42,19 +58,25 @@ async function setState(patch) {
 async function openNext() {
   const state = await getState();
   if (!state.running) return state;
-  const { items, preparing } = await api("/api/ext/queue");
+  const { items, preparing } = await api(`/api/ext/queue${state.only?.length ? `?ids=${state.only.join(",")}` : ""}`);
   const next = items[0];
   if (!next) {
-    const msg = preparing ? `${preparing} resume(s) still being prepared — start again in a moment.` : "Queue finished.";
-    return setState({ running: false, current: null, message: msg });
+    const msg = preparing && !state.only ? `${preparing} resume(s) still being prepared — start again in a moment.` : "Queue finished.";
+    const done = await setState({ running: false, current: null, only: null, tabId: null, message: msg });
+    if (state.only && state.tabId != null) {
+      // An Apply started from JobPilot: close the application tab and go back to JobPilot.
+      await chrome.tabs.remove(state.tabId).catch(() => {});
+      await focusJobPilot();
+    }
+    return done;
   }
   await api(`/api/ext/applications/${next.application_id}/status`, { method: "POST", body: { status: "in_progress" } });
   let tabId = state.tabId;
   try {
-    if (tabId != null) await chrome.tabs.update(tabId, { url: next.job.url, active: true });
+    if (tabId != null) await chrome.tabs.update(tabId, { url: next.job.apply_url || next.job.url, active: true });
     else throw new Error("no tab");
   } catch {
-    const tab = await chrome.tabs.create({ url: next.job.url, active: true });
+    const tab = await chrome.tabs.create({ url: next.job.apply_url || next.job.url, active: true });
     tabId = tab.id;
   }
   return setState({ tabId, current: next, remaining: items.length - 1, message: "" });
@@ -65,6 +87,7 @@ async function finishCurrent(status, note = "") {
   if (!state.current) return state;
   await api(`/api/ext/applications/${state.current.application_id}/status`, { method: "POST", body: { status, note } });
   await setState({ current: null, done: state.done + (status === "applied" ? 1 : 0), skipped: state.skipped + (status === "skipped" ? 1 : 0) });
+  notifyJobPilot({ applicationId: state.current.application_id, status });
   return openNext();
 }
 
@@ -106,7 +129,18 @@ const handlers = {
     return null;
   },
   async taskDone({ status, note }) { return finishCurrent(status, note); },
-  async startQueue() { await setState({ running: true, done: 0, skipped: 0, message: "" }); return openNext(); },
+  async startQueue() { await setState({ running: true, done: 0, skipped: 0, message: "", only: null }); return openNext(); },
+  // From the JobPilot page: apply to these applications now, in a new tab.
+  async applyNow({ applicationIds }) {
+    const ids = (applicationIds || []).map(Number).filter(Boolean);
+    if (!ids.length) throw new Error("Nothing to apply to.");
+    const state = await getState();
+    if (state.running) throw new Error("The extension is already applying — finish or stop that first.");
+    await setState({ running: true, done: 0, skipped: 0, message: "", only: ids, tabId: null });
+    const next = await openNext();
+    if (!next.current) throw new Error(next.message || "That application isn't ready yet.");
+    return { started: true, title: next.current.job.title };
+  },
   async stopQueue() {
     const state = await getState();
     if (state.current) await api(`/api/ext/applications/${state.current.application_id}/status`, { method: "POST", body: { status: "queued" } }).catch(() => {});

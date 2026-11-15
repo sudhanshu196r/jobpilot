@@ -33,6 +33,22 @@ Then open **http://127.0.0.1:8765**.
 7. **Extension → Start applying.** It works through the queue one job at a time.
 8. *(Optional)* **Settings → New-match email alerts** to get a digest whenever new jobs match you, and **Settings → AI assistant (MCP)** to manage your search from Claude.
 
+## Apply from JobPilot
+
+Click **Apply** on any job (in a list, the job panel or the Applications board):
+
+1. **Tailored resume.** It's built for that job from your real experience.
+2. **Questions.** For Greenhouse jobs, JobPilot shows the employer's *actual* application questions, pre-answered from your profile and saved answers, so you review and edit them in JobPilot. Legal and sensitive questions are only answered from your preferences, never guessed. Consent boxes are never ticked for you.
+3. **Apply now.** The extension opens the application form directly, fills your reviewed answers (including searchable dropdowns), attaches the resume, and, if you tick *Submit for me*, submits once every required field is filled. It then closes the tab and JobPilot shows the application as applied.
+
+*Submit for me* is only offered for company application forms (Greenhouse, Lever, Ashby, SmartRecruiters). On Naukri, Indeed, LinkedIn and Workday you press Submit yourself. Captchas, if a site shows one, are yours to solve.
+
+The final submit always happens in your browser. Employers' systems only accept applications through their own forms, or with the employer's private API key. **Apply to N queued** on the Applications board works through several applications in a row.
+
+**Dashboard:** strong matches and applications with week-over-week change, the application pipeline with conversion rates, 30-day activity, match-score spread, the skills most often missing from your better matches (click one to see those jobs), where jobs come from, top companies hiring for you, and follow-ups due (applied 7+ days ago with no reply, with a copyable follow-up note).
+
+**Applications board:** drag cards between *To apply*, *Applied*, *Interviewing*, *Offer* and *Closed*, or switch to the table view. **Interview prep** (in each job) lists likely technical and behavioural questions, how to answer each from your real experience, gaps to prepare for, and questions to ask.
+
 ## Every job in one place
 
 JobPilot collects recent openings from four kinds of channel into one deduplicated feed, ranked against your profile:
@@ -166,7 +182,7 @@ Site markup changes from time to time. If badges stop appearing on Naukri, Indee
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # 64 tests
+.venv/bin/python -m pytest -q          # 69 tests
 JOBPILOT_LIVE=1 .venv/bin/python -m pytest tests/test_live_sources.py   # optional: hits the real job-board APIs
 .venv/bin/python -m app                # or: uvicorn app.main:app --reload --port 8765
 ```

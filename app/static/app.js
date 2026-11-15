@@ -2,7 +2,8 @@
 // All dynamic text goes through esc(); job descriptions come from third parties.
 
 // Must equal __version__ in app/__init__.py (checked by a test).
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
+import { barChart, columnChart, sparkline } from "./charts.js?v=1.4.0";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
@@ -143,42 +144,133 @@ async function refreshAiBadge() {
   } catch { return null; }
 }
 
+// --------------------------------------------------------------------------- extension bridge
+
+// The extension injects a small bridge into this page (content/bridge.js).
+const ext = {
+  ready: () => !!document.documentElement.dataset.jobpilotExtension,
+  connected: () => document.documentElement.dataset.jobpilotConnected === "yes",
+  call(type, payload = {}) {
+    return new Promise((resolve, reject) => {
+      const id = Math.random().toString(36).slice(2);
+      const timer = setTimeout(() => { window.removeEventListener("message", onMsg); reject(new Error("The extension didn't answer. Reload it at chrome://extensions and try again.")); }, 20000);
+      function onMsg(e) {
+        if (e.source !== window || e.data?.source !== "jobpilot-ext" || e.data.id !== id) return;
+        window.removeEventListener("message", onMsg);
+        clearTimeout(timer);
+        e.data.reply?.ok ? resolve(e.data.reply.data) : reject(new Error(e.data.reply?.error || "Extension error"));
+      }
+      window.addEventListener("message", onMsg);
+      window.postMessage({ source: "jobpilot-web", id, type, payload }, location.origin);
+    });
+  },
+};
+let refreshTimer;
+window.addEventListener("message", (e) => {
+  if (e.source !== window || e.data?.source !== "jobpilot-ext" || e.data.event !== "changed") return;
+  const st = e.data.detail?.status;
+  if (st === "applied") toast("Application submitted ✓");
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => { if (["dashboard", "applications", "jobs"].includes(location.hash.split("/")[1] || "dashboard")) router(); }, 600);
+});
+
 // --------------------------------------------------------------------------- dashboard
 
+const greeting = () => { const h = new Date().getHours(); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; };
+const delta = (now, before, unit = "") => {
+  if (!now && !before) return "";
+  const d = now - before;
+  const cls = d > 0 ? "up" : d < 0 ? "down" : "";
+  return `<span class="delta ${cls}">${d > 0 ? "▲" : d < 0 ? "▼" : "•"} ${Math.abs(d)}${unit} vs last week</span>`;
+};
+
 routes.dashboard = async () => {
-  const [s, top, settings] = await Promise.all([api("/api/stats"), api("/api/jobs?limit=6&sort=score"), api("/api/settings")]);
-  const a = s.applications || {};
+  const [s, a, top, settings, profile] = await Promise.all([api("/api/stats"), api("/api/analytics"),
+    api("/api/jobs?limit=6&sort=score"), api("/api/settings"), api("/api/profile")]);
+  const k = a.kpis;
   const src = settings.sources;
-  const hasSources = src.greenhouse.length || src.lever.length || src.ashby.length || src.remotive.enabled || src.adzuna.enabled;
+  const hasSources = ["greenhouse", "lever", "ashby", "smartrecruiters", "workday"].some((t) => (src[t] || []).length)
+    || src.remotive.enabled || src.adzuna.enabled || settings.email_import.enabled;
+  const setup = [
+    [s.profile_ready, "Upload your resume to build your profile", "#/profile", "Upload resume"],
+    [hasSources, "Choose where jobs come from (career pages, alert emails)", "#/settings", "Choose sources"],
+    [ext.ready(), "Install the browser extension to apply from JobPilot", "#/settings", "Install guide"],
+    [s.ai_enabled, "Add a Claude API key for AI tailoring (optional)", "#/settings", "Add key"],
+  ];
+  const todo = setup.filter(([done]) => !done);
   const li = s.last_ingest;
+  const name = (profile.profile.contact.name || "").split(" ")[0];
+  const spark = (key) => sparkline(a.activity.map((d) => d[key]));
   view.innerHTML = `
-    <div class="page-head"><div><h1>Dashboard</h1><p class="muted">Your job search at a glance.</p></div>
+    <div class="page-head"><div><h1>${greeting()}${name ? `, ${esc(name)}` : ""}</h1>
+      <p class="muted">${li ? `Last fetch ${fmtDate(li.at)}: ${li.new} new of ${li.fetched} jobs from ${li.sources} sources.` : "Fetch jobs to fill your feed."}</p></div>
       <div class="row"><button id="fetch" class="primary">Fetch new jobs</button></div></div>
-    <div class="grid cols-4">
-      <div class="card stat"><div class="num">${s.jobs}</div><div class="lbl">Jobs tracked</div></div>
-      <div class="card stat"><div class="num">${s.strong_matches}</div><div class="lbl">Strong matches (70+)${s.new_matches_7d ? ` · <a href="#/jobs" data-fresh7>${s.new_matches_7d} new this week</a>` : ""}</div></div>
-      <div class="card stat"><div class="num">${(a.queued || 0) + (a.preparing || 0) + (a.in_progress || 0)}</div><div class="lbl">In apply queue</div></div>
-      <div class="card stat"><div class="num">${(a.applied || 0) + (a.interview || 0) + (a.offer || 0) + (a.rejected || 0)}</div><div class="lbl">Applied</div></div>
+    ${todo.length ? `<div class="card setup"><div class="row"><h2 class="spacer">Get set up</h2><span class="muted small">${setup.length - todo.length} of ${setup.length} done</span></div>
+      <div class="progress"><i style="width:${Math.round(((setup.length - todo.length) / setup.length) * 100)}%"></i></div>
+      <ul class="checklist">${setup.map(([done, label, href, cta]) => `<li><span class="dot ${done ? "on" : ""}"></span><div class="spacer ${done ? "muted" : ""}">${label}</div>${done ? `<span class="small muted">Done</span>` : `<a href="${href}">${cta}</a>`}</li>`).join("")}</ul></div>` : ""}
+    <div class="grid cols-4 kpis">
+      <a class="card kpi" href="#/jobs" data-strong><div class="lbl">Strong matches</div><div class="num">${k.strong_matches}</div>
+        <div class="row">${delta(k.new_matches_week, k.new_matches_prev_week)}<span class="spacer"></span>${spark("found")}</div></a>
+      <a class="card kpi" href="#/applications"><div class="lbl">Applied</div><div class="num">${k.applied_total}</div>
+        <div class="row">${delta(k.applied_week, k.applied_prev_week)}<span class="spacer"></span>${spark("applied")}</div></a>
+      <a class="card kpi" href="#/applications"><div class="lbl">Interviews</div><div class="num">${k.interviews}</div>
+        <div class="row"><span class="delta">${k.offers} offer${k.offers === 1 ? "" : "s"}</span></div></a>
+      <div class="card kpi"><div class="lbl">Response rate</div><div class="num">${k.response_rate == null ? "–" : Math.round(k.response_rate * 100) + "%"}</div>
+        <div class="row"><span class="delta">${k.in_queue} waiting in queue</span></div></div>
     </div>
-    <div class="grid cols-2" style="margin-top:16px">
-      <div class="card"><h2>Setup</h2><ul class="checklist">
-        <li><span class="dot ${s.profile_ready ? "on" : ""}"></span><div class="spacer">Profile with your experience &amp; skills</div><a href="#/profile">${s.profile_ready ? "Edit" : "Upload resume"}</a></li>
-        <li><span class="dot ${s.ai_enabled ? "on" : ""}"></span><div class="spacer">Claude API key for AI tailoring <span class="muted small">(optional)</span></div><a href="#/settings">Settings</a></li>
-        <li><span class="dot ${hasSources ? "on" : ""}"></span><div class="spacer">Job sources (company boards, Adzuna, Remotive)</div><a href="#/settings">Configure</a></li>
-        <li><span class="dot"></span><div class="spacer">Browser extension for Naukri &amp; Indeed</div><a href="#/settings">Install guide</a></li>
-        <li><span class="dot ${s.alerts_enabled ? "on" : ""}"></span><div class="spacer">Email alerts for new matches <span class="muted small">(optional)</span></div><a href="#/settings">${s.alerts_enabled ? "On" : "Set up"}</a></li>
-      </ul></div>
-      <div class="card"><h2>Last fetch</h2>${li ? `
-        <p>${fmtDate(li.at)} — <b>${li.new}</b> new of ${li.fetched} fetched from ${li.sources} source(s).</p>
-        ${li.errors?.length ? `<p class="small" style="color:var(--bad)">${li.errors.map(esc).join("<br>")}</p>` : ""}`
-        : `<p class="muted">No fetch yet. Add sources in Settings, or capture jobs from Naukri/Indeed with the extension.</p>`}
-        <p class="small muted">Interviews: ${a.interview || 0} · Offers: ${a.offer || 0} · Resumes generated: ${s.resumes}</p></div>
+    <div class="grid cols-2">
+      <div class="card"><h3>Application pipeline</h3><div id="c-funnel"></div>
+        <div class="rates">${a.funnel.slice(1).map((st, i) => {
+          const prev = a.funnel[i].count;
+          return `<div><div class="num">${prev ? Math.round((st.count / prev) * 100) + "%" : "–"}</div><div class="small muted">${esc(a.funnel[i].stage)} → ${esc(st.stage)}</div></div>`;
+        }).join("")}</div></div>
+      <div class="card"><h3>Activity — last 30 days</h3>
+        <p class="small muted viz-sub">Applications sent</p><div id="c-applied"></div>
+        <p class="small muted viz-sub">New jobs found</p><div id="c-found"></div></div>
     </div>
-    <div class="card" style="margin-top:16px"><div class="row"><h2 class="spacer">Top matches</h2><a href="#/jobs">All jobs →</a></div>
+    <div class="grid cols-3">
+      <div class="card"><h3>Match scores</h3><p class="small muted">Open jobs by how well they fit you</p><div id="c-scores"></div></div>
+      <div class="card"><h3>Skills to learn next</h3><p class="small muted">Most-requested skills you don't list, in your better matches</p><div id="c-gaps"></div></div>
+      <div class="card"><h3>Where your jobs come from</h3><p class="small muted">Open jobs by source</p><div id="c-sources"></div></div>
+    </div>
+    <div class="grid cols-2">
+      <div class="card"><div class="row"><h3 class="spacer">Follow-ups due</h3><span class="muted small">Applied ${7}+ days ago, no reply</span></div>
+        <div id="followups">${a.follow_ups.length ? a.follow_ups.slice(0, 5).map((f) => `<div class="fu" data-app="${f.application_id}">
+          <div class="spacer"><b>${esc(f.title)}</b><div class="small muted">${esc(f.company)} · ${f.days} days</div></div>
+          <button class="sm" data-copy-fu="${f.application_id}">Copy note</button><button class="sm" data-fu="${f.application_id}">Mark done</button></div>`).join("")
+          : `<div class="viz-empty">Nothing to chase. Applications waiting a week without a reply show up here.</div>`}
+          ${a.follow_ups.length > 5 ? `<p class="small muted" style="margin-top:8px">+ ${a.follow_ups.length - 5} more on the <a href="#/applications">Applications</a> board (marked “follow up”).</p>` : ""}</div></div>
+      <div class="card"><h3>Companies hiring for you</h3><p class="small muted">Where most of your good matches are</p><div id="c-companies"></div></div>
+    </div>
+    <div class="card"><div class="row"><h2 class="spacer">Top matches</h2><a href="#/jobs">All jobs →</a></div>
       <div class="job-list">${top.items.length ? top.items.map((j) => jobRow(j)).join("") : `<div class="empty">No jobs yet.</div>`}</div></div>`;
+
+  const ord = (i) => `var(--ord-${i + 1})`;
+  barChart($("#c-funnel"), a.funnel, { label: "stage", value: "count", color: ord, empty: "Queue or apply to a job to start your pipeline." });
+  const day = (r) => new Date(r.date).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  columnChart($("#c-applied"), a.activity, { x: "date", value: "applied", xLabel: day, every: 7, empty: "No applications in the last 30 days." });
+  columnChart($("#c-found"), a.activity, { x: "date", value: "found", xLabel: day, every: 7, empty: "No jobs found in the last 30 days." });
+  columnChart($("#c-scores"), a.scores, { x: "range", value: "count", xLabel: (r) => r.range.split("–")[0], every: 2,
+    tip: (r) => `<b>Score ${esc(r.range)}</b><br>${r.count} open job${r.count === 1 ? "" : "s"}` });
+  barChart($("#c-gaps"), a.skill_gaps, { label: "skill", value: "jobs", empty: "No common gaps — nice.",
+    tip: (r) => `<b>${esc(r.skill)}</b><br>Wanted by ${r.jobs} of your better matches.<br><span class="muted">Click to see them</span>`,
+    onClick: (r) => { jobsState.q = r.skill; jobsState.min_score = 50; location.hash = "#/jobs"; } });
+  barChart($("#c-sources"), a.sources, { label: "source", value: "count", empty: "Fetch jobs to see sources." });
+  barChart($("#c-companies"), a.top_companies, { label: "company", value: "jobs", empty: "No good matches yet.",
+    onClick: (r) => { jobsState.q = r.company; jobsState.min_score = 50; location.hash = "#/jobs"; } });
+
   $("#fetch").onclick = (e) => fetchJobs(e.currentTarget, () => router());
-  $("[data-fresh7]")?.addEventListener("click", () => { jobsState.fresh = "7"; jobsState.min_score = 70; });
-  $(".job-list").addEventListener("click", (e) => { const el = e.target.closest("[data-job]"); if (el) openJob(Number(el.dataset.job)); });
+  $("[data-strong]").addEventListener("click", () => { jobsState.min_score = 70; });
+  $("#followups").onclick = async (e) => {
+    const done = e.target.closest("[data-fu]"), copy = e.target.closest("[data-copy-fu]");
+    if (done) { await api(`/api/applications/${done.dataset.fu}/follow-up`, { method: "POST" }); toast("Marked as followed up"); router(); }
+    if (copy) {
+      const f = a.follow_ups.find((x) => String(x.application_id) === copy.dataset.copyFu);
+      const note = `Hi, I applied for the ${f.title} role at ${f.company} ${f.days} days ago and wanted to follow up. I'm still very interested and would be glad to share more about how my experience fits. Thank you for your time!`;
+      navigator.clipboard.writeText(note).then(() => toast("Follow-up note copied"));
+    }
+  };
+  bindJobList($(".job-list"), () => router());
 };
 
 const ageLabel = (days) => (days == null ? "" : days === 0 ? "today" : days < 30 ? `${days}d ago` : `${Math.floor(days / 30)}mo ago`);
@@ -225,9 +317,25 @@ function jobRow(j, selectable = false, selected = false) {
         ${(d.missing_skills || []).slice(0, 3).map((s) => `<span class="pill">${esc(s)}</span>`).join("")}</div>
     </div>
     <div class="side"><div class="row" style="gap:4px;justify-content:flex-end">${freshPills(j)}<span class="pill">${esc(j.source)}</span></div>
-      ${j.application ? statusPill(j.application.status) : j.status === "shortlisted" ? `<span class="pill accent">shortlisted</span>` : ""}
-      ${d.excluded ? `<span class="pill bad">excluded</span>` : ""}</div>
+      <div class="row" style="gap:6px;justify-content:flex-end">
+        ${j.application ? statusPill(j.application.status) : j.status === "shortlisted" ? `<span class="pill accent">shortlisted</span>` : ""}
+        ${d.excluded ? `<span class="pill bad">excluded</span>` : ""}
+        ${canApply(j) ? `<button class="sm primary" data-apply="${j.id}">Apply</button>` : ""}</div></div>
   </div>`;
+}
+
+const DONE_STATES = ["applied", "interview", "offer", "rejected"];
+const canApply = (j) => !j.freshness?.closed && !DONE_STATES.includes(j.application?.status);
+
+// Clicks inside a job list: Apply buttons and opening the drawer.
+function bindJobList(list, onChange) {
+  list.addEventListener("click", (e) => {
+    const apply = e.target.closest("[data-apply]");
+    if (apply) { e.stopPropagation(); return openApply(Number(apply.dataset.apply), onChange); }
+    if (e.target.closest("[data-select]")) return;
+    const row = e.target.closest("[data-job]");
+    if (row) openJob(Number(row.dataset.job), onChange);
+  });
 }
 
 // --------------------------------------------------------------------------- job drawer
@@ -250,8 +358,10 @@ async function openJob(id, onChange) {
         ${j.url ? `<a href="${esc(j.url)}" target="_blank" rel="noopener noreferrer">Open posting ↗</a>` : ""}</div></div></div>
     ${j.freshness?.closed ? `<div class="import-result" style="border-color:var(--bad);background:var(--bad-soft);margin-top:12px">This posting looks <b>closed</b> (taken down or no longer accepting applications). It's hidden from your matches and won't be queued.</div>` : ""}
     <div class="row" style="margin:16px 0">
-      <button class="primary" data-act="queue" ${j.freshness?.closed ? "disabled title=\"This posting is closed\"" : ""}>Tailor resume &amp; add to queue</button>
-      <button data-act="resume">Tailor resume only</button>
+      <button class="primary" data-act="apply" ${canApply(j) ? "" : "disabled"} title="${j.freshness?.closed ? "This posting is closed" : "Review and apply from JobPilot"}">Apply…</button>
+      <button data-act="queue" ${j.freshness?.closed ? "disabled" : ""}>Add to queue</button>
+      <button data-act="resume">Tailor resume</button>
+      <button data-act="prep">Interview prep</button>
       <button data-act="assess">AI fit check</button>
       <span class="spacer"></span>
       <button class="sm" data-act="shortlist">${j.status === "shortlisted" ? "Unshortlist" : "Shortlist"}</button>
@@ -276,6 +386,8 @@ async function openJob(id, onChange) {
     const btn = e.target.closest("[data-act]");
     if (!btn) return;
     const act = btn.dataset.act;
+    if (act === "apply") return openApply(id, onChange);
+    if (act === "prep") return openPrep(id);
     if (act === "queue") await busy(btn, async () => {
       await api("/api/applications/bulk", { method: "POST", body: { job_ids: [id], use_llm: true } });
       toast("Added to the apply queue. The resume is being tailored."); onChange?.(); openJob(id, onChange);
@@ -306,6 +418,144 @@ const assessmentHtml = (a) => `<div class="card" style="margin-top:16px"><div cl
   <div class="grid cols-2"><div><p class="small muted">Strengths</p><ul class="steps">${a.strengths.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div>
   <div><p class="small muted">Gaps</p><ul class="steps">${a.gaps.map((s) => `<li>${esc(s)}</li>`).join("")}</ul></div></div>
   <p class="small"><b>Advice:</b> ${esc(a.advice)}</p></div>`;
+
+// --------------------------------------------------------------------------- apply from JobPilot
+
+const SOURCE_BADGE = { profile: ["good", "from profile"], saved: ["good", "saved answer"], reviewed: ["good", "you reviewed"],
+  ai: ["warn", "AI draft"], none: ["bad", "needs you"] };
+
+function fieldInput(f, i) {
+  const id = `af-${i}`;
+  const val = f.value || "";
+  if (f.type === "select") return `<select id="${id}" data-field="${i}"><option value="">Select…</option>${f.options.map((o) =>
+    `<option ${o.label === val ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`;
+  if (f.type === "multiselect") return `<select id="${id}" data-field="${i}"><option value="">Select…</option>${f.options.map((o) =>
+    `<option ${o.label === val ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`;
+  if (f.type === "checkbox") return `<label class="check"><input type="checkbox" id="${id}" data-field="${i}" ${val ? "checked" : ""}> ${esc(f.options[0]?.label || "Yes")}</label>`;
+  if (f.type === "textarea") return `<textarea id="${id}" data-field="${i}" rows="3">${esc(val)}</textarea>`;
+  return `<input id="${id}" data-field="${i}" value="${esc(val)}">`;
+}
+
+async function openApply(jobId, onChange) {
+  const m = $("#modal");
+  m.hidden = false;
+  m.innerHTML = `<div class="card wide" role="dialog" aria-label="Apply"><div class="empty"><span class="spinner"></span> Preparing your application…</div></div>`;
+  m.onclick = (e) => { if (e.target === m) closeModal(); };
+  let info, job;
+  try {
+    [info, job] = await Promise.all([api(`/api/jobs/${jobId}/apply-info`), api(`/api/jobs/${jobId}`)]);
+  } catch (e) { closeModal(); return toast(e.message, true); }
+
+  const render = () => {
+    const app = info.application;
+    const ready = app && app.resume_id && !["preparing", "failed"].includes(app.status);
+    const form = info.form || [];
+    const missing = form.filter((f) => f.required && !f.value).length;
+    const host = (() => { try { return new URL(info.apply_url).hostname.replace(/^www\./, ""); } catch { return ""; } })();
+    const kr = info.resume?.keyword_report;
+    m.innerHTML = `<div class="card wide" role="dialog" aria-label="Apply to ${esc(job.title)}">
+      <div class="row" style="align-items:flex-start">${scoreBadge(job.score)}
+        <div class="spacer"><h2 style="margin:0">${esc(job.title)}</h2><div class="muted small">${esc(job.company)} · ${esc(job.location || "")}${host ? ` · applies on ${esc(host)}` : ""}</div></div>
+        <button class="ghost" data-cancel aria-label="Close">✕</button></div>
+
+      <div class="step"><div class="step-n ${ready ? "done" : ""}">1</div><div class="spacer">
+        <b>Tailored resume</b>
+        ${ready ? `<div class="small">Ready${kr ? ` — covers ${Math.round((kr.coverage || 0) * 100)}% of the skills they ask for` : ""}.
+            <a href="#/resumes/${app.resume_id}" data-cancel>Review / edit</a> · <a href="/api/resumes/${app.resume_id}/file/pdf" target="_blank">PDF</a></div>`
+          : `<div class="small muted">A resume tailored to this job is attached to the application. Nothing is invented — only your real experience, reordered for this job.</div>
+             <div class="row" style="margin-top:8px"><button class="primary sm" id="ap-prepare">Tailor my resume</button>
+             <label class="check small"><input type="checkbox" id="ap-cover"> with cover letter</label></div>`}
+      </div></div>
+
+      <div class="step"><div class="step-n ${form.length && !missing ? "done" : ""}">2</div><div class="spacer">
+        <b>Application questions</b>
+        ${form.length ? `<div class="small muted">These are the actual questions on ${esc(host || "the form")}, answered from your profile and saved answers.
+            Change anything — what you change is remembered for next time.${missing ? ` <b class="bad-text">${missing} required answer${missing === 1 ? "" : "s"} still needed.</b>` : ""}</div>
+          <div class="qa">${form.map((f, i) => `<div class="qa-row ${f.required && !f.value ? "need" : ""}">
+            <label for="af-${i}">${esc(f.label)}${f.required ? ' <span class="req">*</span>' : ""}
+              <span class="pill ${SOURCE_BADGE[f.value ? f.source : "none"]?.[0] || ""}">${SOURCE_BADGE[f.value ? f.source : "none"]?.[1] || esc(f.source)}</span></label>
+            ${fieldInput(f, i)}</div>`).join("")}</div>`
+          : `<div class="small muted">This site's questions are filled in on the page by the extension, from your profile and saved answers. Anything it can't answer truthfully is left for you.</div>`}
+      </div></div>
+
+      <div class="step"><div class="step-n">3</div><div class="spacer">
+        <b>Submit</b>
+        ${ext.ready() ? `
+          ${info.can_auto_submit ? `<label class="check" style="margin-top:6px"><input type="checkbox" id="ap-auto" ${app?.auto_submit || (form.length && !missing) ? "checked" : ""}>
+            Submit for me once every required field is filled <span class="muted small">(otherwise you press Submit on the page)</span></label>`
+            : `<div class="small muted">${esc(job.source)} applications are submitted by you on the page — JobPilot fills what it can and tracks it.</div>`}
+          <div class="small muted" style="margin-top:4px">A tab opens directly on the application form, fills it, attaches your resume${info.can_auto_submit ? ", submits if you allowed it," : ""} and closes when it's done. Captchas, if any, are yours to solve.</div>`
+        : `<div class="small"><b>Install the browser extension</b> to apply from here (Settings → Browser extension). Without it you can open the form and apply yourself:</div>`}
+      </div></div>
+
+      <div class="row end modal-foot">
+        ${info.apply_url ? `<a class="btn" href="${esc(info.apply_url)}" target="_blank" rel="noopener noreferrer">Open form myself ↗</a>` : ""}
+        ${!ext.ready() && app ? `<button id="ap-mark">I applied</button>` : ""}
+        <button class="primary" id="ap-go" ${ext.ready() ? "" : "disabled"}>${ready ? "Apply now" : "Tailor resume & apply"}</button></div>
+    </div>`;
+
+    const collect = () => {
+      const answers = {}, labels = {};
+      form.forEach((f, i) => {
+        const el = $(`[data-field="${i}"]`, m);
+        const v = f.type === "checkbox" ? (el.checked ? "Yes" : "") : el.value.trim();
+        f.value = v;
+        if (v) { answers[f.name] = v; labels[f.name] = f.label; }
+      });
+      return { answers, labels, auto_submit: !!$("#ap-auto", m)?.checked };
+    };
+    const prepare = async () => {
+      await api(`/api/jobs/${jobId}/prepare-apply`, { method: "POST", body: { use_llm: true, cover_letter: !!$("#ap-cover", m)?.checked } });
+      info = await api(`/api/jobs/${jobId}/apply-info`);
+    };
+    $$("[data-cancel]", m).forEach((b) => (b.onclick = closeModal));
+    $("#ap-prepare", m)?.addEventListener("click", (e) => busy(e.currentTarget, async () => { const keep = collect(); await prepare(); restore(keep); render(); onChange?.(); }));
+    $("#ap-mark", m)?.addEventListener("click", async () => {
+      await api(`/api/applications/${info.application.id}`, { method: "PATCH", body: { status: "applied" } });
+      closeModal(); toast("Marked as applied"); onChange?.();
+    });
+    $("#ap-go", m).onclick = (e) => busy(e.currentTarget, async () => {
+      const chosen = collect();
+      if (!(info.application?.resume_id) || ["preparing", "failed"].includes(info.application.status)) {
+        e.currentTarget.innerHTML = `<span class="spinner"></span> Tailoring resume…`;
+        await prepare();
+      }
+      await api(`/api/applications/${info.application.id}/answers`, { method: "PUT", body: chosen });
+      const r = await ext.call("applyNow", { applicationIds: [info.application.id] });
+      closeModal();
+      toast(`Opened the application for ${r.title}${chosen.auto_submit ? " — it will submit once everything is filled" : ""}.`);
+      onChange?.();
+    });
+  };
+  // Keep edits when re-rendering after tailoring.
+  const restore = (keep) => (info.form || []).forEach((f) => { if (keep.answers[f.name] != null) { f.value = keep.answers[f.name]; f.source = "reviewed"; } });
+  render();
+}
+
+async function openPrep(jobId) {
+  const m = $("#modal");
+  m.hidden = false;
+  m.onclick = (e) => { if (e.target === m) closeModal(); };
+  const job = await api(`/api/jobs/${jobId}`);
+  const show = (p) => {
+    const items = (list) => list.map((q) => `<div class="prep"><b>${esc(q.question)}</b><div class="small muted">${esc(q.why_they_ask)}</div>
+      <div class="small"><span class="pill good">Your angle</span> ${esc(q.your_angle)}</div></div>`).join("");
+    m.innerHTML = `<div class="card wide" role="dialog" aria-label="Interview prep"><div class="row"><h2 class="spacer" style="margin:0">Interview prep</h2>
+      <span class="pill ${p.method === "llm" ? "accent" : ""}">${p.method === "llm" ? "AI" : "built-in"}</span><button class="ghost" data-cancel aria-label="Close">✕</button></div>
+      <p class="muted">${esc(job.title)} · ${esc(job.company)}</p><p>${esc(p.summary)}</p>
+      <h3>Technical</h3>${items(p.technical) || '<p class="muted small">No specific skills found in the description.</p>'}
+      <h3>Behavioural</h3>${items(p.behavioral)}
+      ${p.gaps_to_prepare.length ? `<h3>Gaps to prepare for</h3><ul class="steps">${p.gaps_to_prepare.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}
+      <h3>Questions to ask them</h3><ul class="steps">${p.questions_to_ask.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>
+      <div class="row end"><button id="prep-again">Regenerate</button><button class="primary" data-cancel>Done</button></div></div>`;
+    $$("[data-cancel]", m).forEach((b) => (b.onclick = closeModal));
+    $("#prep-again", m).onclick = (e) => busy(e.currentTarget, async () => show(await api(`/api/jobs/${jobId}/interview-prep`, { method: "POST" })));
+  };
+  const cached = job.score_detail?.interview_prep;
+  if (cached) return show(cached);
+  m.innerHTML = `<div class="card wide"><div class="empty"><span class="spinner"></span> Preparing likely questions from the job and your experience…</div></div>`;
+  try { show(await api(`/api/jobs/${jobId}/interview-prep`, { method: "POST" })); } catch (e) { closeModal(); toast(e.message, true); }
+}
 
 // --------------------------------------------------------------------------- jobs
 
@@ -370,15 +620,13 @@ routes.jobs = async () => {
   $("#pager").onclick = (e) => { const b = e.target.closest("[data-page]"); if (b) { jobsState.offset = Number(b.dataset.page) * 50; load(); } };
   $("#list").onclick = (e) => {
     const cb = e.target.closest("[data-select]");
-    if (cb) {
-      const id = Number(cb.dataset.select);
-      cb.checked ? jobsState.selected.add(id) : jobsState.selected.delete(id);
-      cb.closest(".job").classList.toggle("selected", cb.checked);
-      return renderBulk();
-    }
-    const row = e.target.closest("[data-job]");
-    if (row) openJob(Number(row.dataset.job), load);
+    if (!cb) return;
+    const id = Number(cb.dataset.select);
+    cb.checked ? jobsState.selected.add(id) : jobsState.selected.delete(id);
+    cb.closest(".job").classList.toggle("selected", cb.checked);
+    renderBulk();
   };
+  bindJobList($("#list"), load);
   $("#bulk").onclick = async (e) => {
     const b = e.target.closest("[data-bulk]");
     if (!b) return;
@@ -621,51 +869,141 @@ function bindImportCard(isEmpty) {
 
 // --------------------------------------------------------------------------- applications
 
+const BOARD = [
+  { key: "todo", title: "To apply", statuses: ["preparing", "queued", "in_progress", "failed"], drop: "queued" },
+  { key: "applied", title: "Applied", statuses: ["applied"], drop: "applied" },
+  { key: "interview", title: "Interviewing", statuses: ["interview"], drop: "interview" },
+  { key: "offer", title: "Offer", statuses: ["offer"], drop: "offer" },
+  { key: "closed", title: "Closed", statuses: ["rejected", "skipped"], drop: "rejected" },
+];
+const daysSince = (d) => (d ? Math.floor((Date.now() - new Date(d).getTime()) / 864e5) : null);
+let appsView = (() => { try { return localStorage.getItem("jp-apps-view") || "board"; } catch { return "board"; } })();
+
 routes.applications = async () => {
   view.innerHTML = `<div class="page-head"><div><h1>Applications</h1>
-    <p class="muted">Queued jobs are opened one by one by the browser extension, which fills the form and attaches the tailored resume. You review and submit.</p></div>
-    <div class="row"><select id="f-st" aria-label="Filter"><option value="">All</option><option value="preparing,queued,in_progress">Queue</option>
-    <option value="applied,interview,offer,rejected">Applied</option><option value="failed,skipped">Failed / skipped</option></select></div></div>
-    <div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Job</th><th>Status</th><th>Resume</th><th>Updated</th><th>Notes</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>`;
+    <p class="muted">Drag cards between columns as things progress. <b>Apply</b> opens the form, fills it and attaches your tailored resume.</p></div>
+    <div class="row"><button class="primary" id="apply-all" hidden></button>
+      <div class="seg" role="tablist"><button data-view="board" class="${appsView === "board" ? "on" : ""}">Board</button><button data-view="table" class="${appsView === "table" ? "on" : ""}">Table</button></div></div></div>
+    <div id="apps"></div>`;
   let timer;
   const load = async () => {
-    const st = $("#f-st")?.value ?? "";
-    const apps = await api(`/api/applications${st ? `?status=${st}` : ""}`);
-    $("#rows").innerHTML = apps.length ? apps.map((a) => `<tr data-id="${a.id}">
-      <td><a href="#" data-open="${a.job_id}"><b>${esc(a.job?.title ?? "(deleted)")}</b></a><div class="small muted">${esc(a.job?.company ?? "")} · ${esc(a.job?.source ?? "")}</div>
-        ${a.error ? `<div class="small" style="color:var(--bad)">${esc(a.error)}</div>` : ""}</td>
-      <td>${a.status === "preparing" ? `<span class="pill accent"><span class="spinner"></span> preparing</span>` :
-        `<select data-status aria-label="Status">${APP_STATUSES.map((s) => `<option ${s === a.status ? "selected" : ""}>${s}</option>`).join("")}</select>`}</td>
-      <td>${a.resume_id ? `<a href="#/resumes/${a.resume_id}">View</a> · <a href="/api/resumes/${a.resume_id}/file/pdf">PDF</a>` : "—"}</td>
-      <td class="small muted">${fmtDate(a.applied_at || a.updated_at)}</td>
-      <td><textarea data-notes rows="1" style="min-height:32px;min-width:160px">${esc(a.notes)}</textarea></td>
-      <td>${a.job?.url ? `<a class="btn sm" href="${esc(a.job.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>` : ""}
-        <button class="sm ghost danger" data-remove aria-label="Remove">✕</button></td></tr>`).join("")
-      : `<tr><td colspan="6" class="empty">Nothing here yet. Select jobs on the Jobs page and click “Tailor resumes &amp; queue”.</td></tr>`;
+    const apps = await api("/api/applications");
+    const ready = apps.filter((a) => a.status === "queued" && a.resume_id);
+    const btn = $("#apply-all");
+    btn.hidden = !ready.length || !ext.ready();
+    btn.textContent = `Apply to ${ready.length} queued`;
+    btn.onclick = (e) => busy(e.currentTarget, async () => {
+      const r = await ext.call("applyNow", { applicationIds: ready.map((a) => a.id) });
+      toast(`Applying — started with ${r.title}. JobPilot updates as each one finishes.`);
+    });
+    if (appsView === "board") renderBoard(apps); else renderTable(apps);
     clearTimeout(timer);
     if (apps.some((a) => a.status === "preparing")) timer = setTimeout(load, 2500);
   };
   teardown = () => clearTimeout(timer);
-  $("#f-st").onchange = load;
-  const rows = $("#rows");
-  rows.onchange = async (e) => {
-    const tr = e.target.closest("tr[data-id]");
-    if (!tr) return;
-    try {
-      if (e.target.matches("[data-status]")) { await api(`/api/applications/${tr.dataset.id}`, { method: "PATCH", body: { status: e.target.value } }); toast("Status updated"); }
-      if (e.target.matches("[data-notes]")) { await api(`/api/applications/${tr.dataset.id}`, { method: "PATCH", body: { notes: e.target.value } }); toast("Notes saved"); }
-    } catch (err) { toast(err.message, true); load(); }
+  $$("[data-view]").forEach((b) => (b.onclick = () => {
+    appsView = b.dataset.view;
+    try { localStorage.setItem("jp-apps-view", appsView); } catch { /* private mode */ }
+    $$("[data-view]").forEach((x) => x.classList.toggle("on", x === b));
+    load();
+  }));
+
+  const setStatus = async (id, status) => {
+    try { await api(`/api/applications/${id}`, { method: "PATCH", body: { status } }); }
+    catch (err) { toast(err.message, true); }
+    load();
   };
-  rows.onclick = async (e) => {
-    const open = e.target.closest("[data-open]");
-    if (open) { e.preventDefault(); return openJob(Number(open.dataset.open), load); }
-    if (e.target.closest("[data-remove]")) {
-      const tr = e.target.closest("tr");
-      if (!confirm("Remove this application from the tracker?")) return;
-      await api(`/api/applications/${tr.dataset.id}`, { method: "DELETE" }).catch((err) => toast(err.message, true));
-      load();
-    }
-  };
+
+  function card(a) {
+    const since = daysSince(a.applied_at);
+    const due = a.status === "applied" && since >= 7 && daysSince(a.followed_up_at ?? a.applied_at) >= 7;
+    return `<div class="kcard" draggable="true" data-id="${a.id}">
+      <div class="row" style="gap:8px;align-items:flex-start;flex-wrap:nowrap">${a.job?.score != null ? scoreBadge(a.job.score) : ""}
+        <div class="spacer" style="min-width:0"><a href="#" data-open="${a.job_id}" class="ktitle" draggable="false">${esc(a.job?.title ?? "(deleted job)")}</a>
+          <div class="small muted">${esc(a.job?.company ?? "")}</div></div></div>
+      <div class="row small" style="gap:6px;margin-top:6px">
+        ${a.status === "preparing" ? `<span class="pill accent"><span class="spinner"></span> tailoring</span>` : ""}
+        ${a.status === "failed" ? `<span class="pill bad" title="${esc(a.error)}">failed</span>` : ""}
+        ${a.status === "in_progress" ? `<span class="pill warn">applying…</span>` : ""}
+        ${a.status === "skipped" ? `<span class="pill">skipped</span>` : ""}
+        ${since != null ? `<span class="muted">applied ${since === 0 ? "today" : since + "d ago"}</span>` : ""}
+        ${due ? `<span class="pill warn">follow up</span>` : ""}
+        <span class="spacer"></span>
+        ${["queued", "failed"].includes(a.status) ? `<button class="sm primary" data-apply="${a.job_id}">Apply</button>` : ""}
+        ${a.status === "interview" ? `<button class="sm" data-prep="${a.job_id}">Prep</button>` : ""}
+        ${a.resume_id ? `<a class="btn sm" href="/api/resumes/${a.resume_id}/file/pdf" target="_blank" title="Resume sent" draggable="false">CV</a>` : ""}
+      </div></div>`;
+  }
+
+  function renderBoard(apps) {
+    $("#apps").innerHTML = `<div class="board">${BOARD.map((col) => {
+      const items = apps.filter((a) => col.statuses.includes(a.status));
+      return `<section class="kcol" data-col="${col.key}" data-drop="${col.drop}"><header><b>${col.title}</b><span class="pill">${items.length}</span></header>
+        <div class="kitems">${items.map(card).join("") || `<div class="kempty">${col.key === "todo" ? "Click Apply on a job, or queue several from Jobs." : "Drag a card here"}</div>`}</div></section>`;
+    }).join("")}</div>`;
+    const board = $(".board");
+    board.addEventListener("dragstart", (e) => {
+      const c = e.target.closest?.(".kcard");
+      if (!c) return;
+      e.dataTransfer.setData("application/x-jobpilot-app", c.dataset.id);
+      e.dataTransfer.effectAllowed = "move";
+      c.classList.add("dragging");
+    });
+    board.addEventListener("dragend", (e) => e.target.closest?.(".kcard")?.classList.remove("dragging"));
+    board.addEventListener("dragover", (e) => { const col = e.target.closest(".kcol"); if (col) { e.preventDefault(); $$(".kcol").forEach((c) => c.classList.toggle("over", c === col)); } });
+    board.addEventListener("dragleave", (e) => { if (!e.relatedTarget || !board.contains(e.relatedTarget)) $$(".kcol").forEach((c) => c.classList.remove("over")); });
+    board.addEventListener("drop", (e) => {
+      const col = e.target.closest(".kcol");
+      $$(".kcol").forEach((c) => c.classList.remove("over"));
+      const id = e.dataTransfer.getData("application/x-jobpilot-app");
+      const a = apps.find((x) => String(x.id) === id);
+      if (!col || !a || BOARD.find((b) => b.key === col.dataset.col).statuses.includes(a.status)) return;
+      e.preventDefault();
+      setStatus(id, col.dataset.drop);
+    });
+    board.addEventListener("click", (e) => {
+      const open = e.target.closest("[data-open]"), apply = e.target.closest("[data-apply]"), prep = e.target.closest("[data-prep]");
+      if (open) { e.preventDefault(); openJob(Number(open.dataset.open), load); }
+      if (apply) openApply(Number(apply.dataset.apply), load);
+      if (prep) openPrep(Number(prep.dataset.prep));
+    });
+  }
+
+  function renderTable(apps) {
+    $("#apps").innerHTML = `<div class="card" style="padding:0;overflow-x:auto"><table class="tbl"><thead><tr><th>Job</th><th>Status</th><th>Resume</th><th>Updated</th><th>Notes</th><th></th></tr></thead><tbody id="rows">
+      ${apps.length ? apps.map((a) => `<tr data-id="${a.id}">
+      <td><a href="#" data-open="${a.job_id}"><b>${esc(a.job?.title ?? "(deleted)")}</b></a><div class="small muted">${esc(a.job?.company ?? "")} · ${esc(a.job?.source ?? "")}</div>
+        ${a.error ? `<div class="small" style="color:var(--bad)">${esc(a.error)}</div>` : ""}</td>
+      <td>${a.status === "preparing" ? `<span class="pill accent"><span class="spinner"></span> preparing</span>` :
+        `<select data-status aria-label="Status">${APP_STATUSES.map((st) => `<option ${st === a.status ? "selected" : ""}>${st}</option>`).join("")}</select>`}</td>
+      <td>${a.resume_id ? `<a href="#/resumes/${a.resume_id}">View</a> · <a href="/api/resumes/${a.resume_id}/file/pdf">PDF</a>` : "—"}</td>
+      <td class="small muted">${fmtDate(a.applied_at || a.updated_at)}</td>
+      <td><textarea data-notes rows="1" style="min-height:32px;min-width:160px">${esc(a.notes)}</textarea></td>
+      <td><div class="row" style="flex-wrap:nowrap">${["queued", "failed"].includes(a.status) ? `<button class="sm primary" data-apply="${a.job_id}">Apply</button>` : ""}
+        ${a.job?.url ? `<a class="btn sm" href="${esc(a.job.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>` : ""}
+        <button class="sm ghost danger" data-remove aria-label="Remove">✕</button></div></td></tr>`).join("")
+      : `<tr><td colspan="6" class="empty">Nothing here yet. Click Apply on a job, or select several on the Jobs page and queue them.</td></tr>`}</tbody></table></div>`;
+    const rows = $("#rows");
+    rows.onchange = async (e) => {
+      const tr = e.target.closest("tr[data-id]");
+      if (!tr) return;
+      try {
+        if (e.target.matches("[data-status]")) { await api(`/api/applications/${tr.dataset.id}`, { method: "PATCH", body: { status: e.target.value } }); toast("Status updated"); }
+        if (e.target.matches("[data-notes]")) { await api(`/api/applications/${tr.dataset.id}`, { method: "PATCH", body: { notes: e.target.value } }); toast("Notes saved"); }
+      } catch (err) { toast(err.message, true); load(); }
+    };
+    rows.onclick = async (e) => {
+      const open = e.target.closest("[data-open]"), apply = e.target.closest("[data-apply]");
+      if (open) { e.preventDefault(); return openJob(Number(open.dataset.open), load); }
+      if (apply) return openApply(Number(apply.dataset.apply), load);
+      if (e.target.closest("[data-remove]")) {
+        const tr = e.target.closest("tr");
+        if (!confirm("Remove this application from the tracker?")) return;
+        await api(`/api/applications/${tr.dataset.id}`, { method: "DELETE" }).catch((err) => toast(err.message, true));
+        load();
+      }
+    };
+  }
   await load();
 };
 

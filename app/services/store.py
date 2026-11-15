@@ -322,6 +322,7 @@ def delete_resume(session: Session, resume: Resume) -> None:
 
 def application_dict(session: Session, app_row: Application) -> dict:
     d = app_row.model_dump()
+    d["answers"] = json.loads(app_row.answers or "{}")
     job = session.get(Job, app_row.job_id)
     d["job"] = job_dict(job) if job else None
     return d

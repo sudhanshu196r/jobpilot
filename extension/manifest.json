@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JobPilot",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Captures jobs from Naukri, Indeed and (opt-in) LinkedIn into your local JobPilot, shows match scores, and fills application forms with your tailored resume.",
   "icons": {
     "16": "icons/icon16.png",
@@ -37,6 +37,16 @@
     "https://*.icims.com/*"
   ],
   "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "content/bridge.js"
+      ],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://www.naukri.com/*"

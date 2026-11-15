@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -99,19 +101,26 @@ def queue_add(body: QueueAdd, session: Session = Depends(get_session)):
 
 
 @router.get("/queue")
-def queue(session: Session = Depends(get_session)):
-    apps = session.exec(
-        select(Application).where(col(Application.status).in_(["queued", "in_progress"]))
-        .order_by(col(Application.queue_position), col(Application.created_at))
-    ).all()
+def queue(ids: str = "", session: Session = Depends(get_session)):
+    """Applications ready to apply to. `ids` limits it to those (an Apply from JobPilot)."""
+    from ..services import apply as apply_svc
+
+    stmt = select(Application).where(col(Application.status).in_(["queued", "in_progress"]))
+    if ids:
+        wanted = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+        stmt = stmt.where(col(Application.id).in_(wanted))
+    apps = session.exec(stmt.order_by(col(Application.queue_position), col(Application.created_at))).all()
     out = []
     for a in apps:
         job = session.get(Job, a.job_id)
         if job is None or not job.url:
             continue
         out.append({"application_id": a.id, "status": a.status, "resume_id": a.resume_id,
+                    "answers": json.loads(a.answers or "{}"),
+                    "auto_submit": bool(a.auto_submit and apply_svc.can_auto_submit(job)),
                     "job": {"id": job.id, "title": job.title, "company": job.company, "url": job.url,
-                            "source": job.source, "apply_type": job.apply_type}})
+                            "apply_url": apply_svc.apply_url(job), "source": job.source,
+                            "apply_type": job.apply_type}})
     preparing = len(session.exec(select(Application).where(Application.status == "preparing")).all())
     return {"items": out, "preparing": preparing}
 

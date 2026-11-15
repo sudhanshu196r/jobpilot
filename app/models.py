@@ -89,6 +89,11 @@ class Application(SQLModel, table=True):
     error: str = ""
     queue_position: int = 0
     applied_at: datetime | None = None
+    # Answers reviewed in JobPilot before applying: {field name or question label: value}.
+    answers: str = Field(default="{}", sa_column=Column(Text, nullable=False, default="{}"))
+    # The user approved letting the extension press Submit once every required field is filled.
+    auto_submit: bool = False
+    followed_up_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

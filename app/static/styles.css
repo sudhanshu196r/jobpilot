@@ -232,3 +232,85 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 input.needs, textarea.needs { border-color: var(--warn); box-shadow: 0 0 0 2px var(--warn-soft); }
 details summary { cursor: pointer; color: var(--ink-2); }
 .version-banner { position: sticky; top: 0; z-index: 40; background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--warn); padding: 10px 16px; font-weight: 600; text-align: center; }
+
+/* ---------------------------------------------------------------- charts (colors validated with the dataviz checks) */
+:root {
+  --series-1: #2a78d6;
+  /* ordinal ramp for the pipeline, light -> dark = earlier -> later stage */
+  --ord-1: #86b6ef; --ord-2: #3987e5; --ord-3: #256abf; --ord-4: #104281;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --series-1: #3987e5; --ord-1: #256abf; --ord-2: #3987e5; --ord-3: #6da7ec; --ord-4: #b7d3f6; }
+}
+.grid + .grid, .grid + .card, .card + .grid, .kpis { margin-top: 16px; }
+.viz { width: 100%; height: auto; display: block; overflow: visible; }
+.viz-label { font-size: 12px; fill: var(--ink-2); }
+.viz-value { font-size: 12px; fill: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.viz-axis { font-size: 10px; fill: var(--ink-3); font-variant-numeric: tabular-nums; }
+.viz-grid { stroke: var(--line); stroke-width: 1; }
+.viz-hit:hover path { filter: brightness(1.12); }
+.viz-sub { margin: 10px 0 2px; }
+.viz-empty { color: var(--ink-3); font-size: 13px; padding: 26px 8px; text-align: center; }
+.viz-table { margin-top: 6px; font-size: 12px; }
+.viz-table summary { cursor: pointer; color: var(--ink-3); font-size: 11px; }
+.viz-tip { position: fixed; z-index: 60; pointer-events: none; background: var(--ink); color: var(--panel); padding: 6px 10px;
+  border-radius: 6px; font-size: 12px; line-height: 1.4; box-shadow: var(--shadow); max-width: 260px; }
+.viz-tip .muted { color: color-mix(in srgb, var(--panel) 70%, transparent); }
+.spark { width: 96px; height: 28px; }
+
+/* ---------------------------------------------------------------- dashboard */
+.kpi { display: block; text-decoration: none; color: inherit; padding: 16px 18px; }
+a.kpi:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.kpi .lbl { color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.kpi .num { font-size: 30px; font-weight: 750; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin: 2px 0 4px; }
+.delta { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+.delta.up { color: var(--good); }
+.delta.down { color: var(--bad); }
+.setup { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.progress { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin: 4px 0 6px; }
+.progress > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.fu { display: flex; gap: 8px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.fu:last-child { border-bottom: none; }
+.bad-text { color: var(--bad); }
+
+/* ---------------------------------------------------------------- application board */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; background: var(--panel); }
+.seg button.on { background: var(--accent-soft); color: var(--accent); }
+.board { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.kcol { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; min-height: 240px; transition: border-color .12s, background .12s; }
+.kcol.over { border-color: var(--accent); background: var(--accent-soft); }
+.kcol header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding: 0 2px; }
+.kitems { display: flex; flex-direction: column; gap: 8px; }
+.kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; cursor: grab; box-shadow: var(--shadow); }
+.kcard.dragging { opacity: .5; }
+.kcard .score { width: 34px; height: 34px; font-size: 12px; }
+.kcard .score::before { inset: 3px; }
+.ktitle { font-weight: 600; color: var(--ink); text-decoration: none; display: block; overflow: hidden; text-overflow: ellipsis; }
+.ktitle:hover { color: var(--accent); }
+.kempty { color: var(--ink-3); font-size: 12px; text-align: center; padding: 18px 6px; border: 1px dashed var(--line); border-radius: 8px; }
+
+/* ---------------------------------------------------------------- apply dialog & prep */
+.modal > .card.wide { width: min(780px, 100%); }
+.step { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid var(--line); margin-top: 12px; }
+.step-n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px;
+  background: var(--panel-2); color: var(--ink-2); flex: none; }
+.step-n.done { background: var(--good-soft); color: var(--good); }
+.qa { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; max-height: 46vh; overflow: auto; padding-right: 4px; }
+.qa-row label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.qa-row.need input, .qa-row.need select, .qa-row.need textarea { border-color: var(--warn); }
+.req { color: var(--bad); }
+.prep { padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.prep:last-child { border-bottom: none; }
+
+/* ---------------------------------------------------------------- navigation */
+#nav a { display: flex; align-items: center; gap: 10px; }
+#nav svg { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+@media (max-width: 900px) {
+  .board { grid-template-columns: repeat(5, 240px); }
+  #nav a span { display: none; }
+}
+.rates { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.rates .num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.modal-foot { position: sticky; bottom: -18px; margin: 14px -18px -18px; padding: 12px 18px; background: var(--panel);
+  border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); }

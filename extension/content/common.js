@@ -194,9 +194,35 @@
     return idx;
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isCombobox = (el) => el?.getAttribute?.("role") === "combobox" || el?.getAttribute?.("aria-autocomplete") === "list";
+
+  // Searchable dropdowns (react-select on Greenhouse, Ashby, Lever...): type, then click the option.
+  async function fillCombobox(el, value) {
+    el.focus();
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    setNativeValue(el, String(value));
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    for (let i = 0; i < 10; i++) {
+      await sleep(150);
+      const listId = el.getAttribute("aria-controls") || el.getAttribute("aria-owns");
+      const scope = (listId && document.getElementById(listId)) || document;
+      const options = [...scope.querySelectorAll("[role=option]")].filter(visible);
+      if (!options.length) continue;
+      const idx = bestOption(options.map(text), value);
+      if (idx < 0) break;
+      options[idx].dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      options[idx].click();
+      return true;
+    }
+    setNativeValue(el, "");  // no matching option: leave it for the user
+    return false;
+  }
+
   function fill(field, value) {
     if (value == null || value === "") return false;
     const el = field.el;
+    if (field.kind === "text" && isCombobox(el)) return fillCombobox(el, value);
     switch (field.kind) {
       case "text": case "textarea": {
         let v = String(value);
@@ -292,9 +318,9 @@
       job_id: task?.job?.id ?? null,
       use_llm: useAi,
     });
-    answers.forEach((a, i) => {
+    for (const [i, a] of answers.entries()) {
       const f = questions[i];
-      if (a.answer && fill(f, a.answer)) {
+      if (a.answer && await fill(f, a.answer)) {
         filled.set(f.el || f.els[0], { label: f.label, source: a.source, field: f });
         mark(f, a.source);
         count++;
@@ -303,7 +329,7 @@
         filled.set(f.el || f.els[0], { label: f.label, source: "none", field: f });
         unanswered++;
       }
-    });
+    }
     log(`Filled ${count} field(s)${review ? `, ${review} AI draft(s) to review` : ""}${unanswered ? `, ${unanswered} left for you` : ""}.`);
     return { filled: count, review, unanswered };
   }
@@ -335,6 +361,55 @@
     return items.length;
   }
 
+  // ---------------------------------------------------------------- reviewed answers & submit
+
+  // Answers you reviewed in JobPilot, keyed by the form's field name (Greenhouse)
+  // or question text. They are filled before anything else and never overridden.
+  async function fillReviewed(answers, log) {
+    let n = 0;
+    for (const [key, value] of Object.entries(answers || {})) {
+      if (value === "" || value == null) continue;
+      const byName = [...document.querySelectorAll(`[name="${CSS.escape(key)}"], [name="${CSS.escape(key)}[]"]`)];
+      const byId = document.getElementById(key);
+      const els = byName.length ? byName : byId ? [byId] : [];
+      let field = null;
+      if (els.length) {
+        const first = els[0];
+        const type = (first.getAttribute("type") || "").toLowerCase();
+        if (type === "radio" || (type === "checkbox" && els.length > 1)) field = { kind: type === "radio" ? "radio" : "checkgroup", els, options: els.map(optionLabel) };
+        else if (type === "checkbox") field = { kind: "checkbox", el: first };
+        else if (first.tagName === "SELECT") field = { kind: "select", el: first };
+        else if (first.tagName === "TEXTAREA") field = { kind: "textarea", el: first };
+        else field = { kind: "text", el: first, inputType: type };
+      } else {
+        field = collectFields().find((f) => f.label && f.label.toLowerCase().startsWith(String(key).toLowerCase().slice(0, 60)));
+      }
+      if (!field) continue;
+      if (await fill(field, value)) {
+        n++;
+        mark(field, "saved");
+        filled.set(field.el || field.els[0], { label: key, source: "saved", field });
+        attempted.add(field.el || field.els[0]);
+      }
+    }
+    if (n) log(`Filled ${n} answer(s) you reviewed in JobPilot.`);
+    return n;
+  }
+
+  function missingRequired() {
+    return collectFields().filter((f) => {
+      const els = f.els || [f.el];
+      const required = els.some((e) => e.required || e.getAttribute("aria-required") === "true");
+      return required && isEmpty(f);
+    }).map((f) => f.label || "a required field");
+  }
+
+  function findSubmitButton() {
+    const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter(visible);
+    return buttons.find((b) => /^(submit( application)?|send application|apply|apply now)$/i.test((b.value || text(b)).trim()))
+      || buttons.find((b) => b.type === "submit" && b.closest("form")) || null;
+  }
+
   // ---------------------------------------------------------------- queue task UI
 
   const SUCCESS_RE = /(application (has been )?(submitted|sent|received)|successfully applied|you have applied|thank you for applying|thanks for applying|applied successfully)/i;
@@ -357,7 +432,7 @@
       <div class="log"></div>
       <div class="row">${manualOnly ? "" : `<button class="a pr" data-fill>Autofill</button>`}<button class="a ok" data-applied>Applied ✓ Next</button>
       <button class="a" data-skip>Skip</button><button class="a" data-stop>Stop</button></div>
-      <div class="m">Review every field, submit the application yourself, then press <b>Applied</b>.</div>`, {
+      <div class="m">${task.auto_submit ? "You approved submitting: JobPilot submits once every required field is filled." : "Review every field, submit the application yourself, then press <b>Applied</b>."}</div>`, {
       "[data-fill]": () => autofill({ task, useAi: task.useAi, log }).catch((e) => log(e.message, "err")),
       "[data-applied]": () => finish("applied"),
       "[data-skip]": () => finish("skipped"),
@@ -371,10 +446,32 @@
       if (task.autoClickApply && !manualOnly) { log("Clicking Apply…"); apply.click(); } else log("Apply button highlighted — click it when ready.");
     }
     if (manualOnly) log("Apply on this site yourself; JobPilot doesn't automate it. Then press Applied.");
-    if (task.autoFill && !manualOnly) {
+    if (!manualOnly && task.answers && Object.keys(task.answers).length) {
+      await sleep(800);  // let the form render
+      await fillReviewed(task.answers, log).catch((e) => log(e.message, "err"));
+    }
+    if ((task.autoFill || task.auto_submit) && !manualOnly) {
       const run = debounce(() => autofill({ task, useAi: task.useAi, log }).catch((e) => log(e.message, "err")), 900);
       run();
       new MutationObserver(run).observe(document.body, { childList: true, subtree: true });
+    }
+    if (task.auto_submit && !manualOnly) {
+      // You approved this in JobPilot: submit once every required field is filled.
+      (async () => {
+        await sleep(4000);
+        await autofill({ task, useAi: task.useAi, log }).catch(() => {});
+        await sleep(1200);
+        const missing = missingRequired();
+        if (missing.length) {
+          log(`Not submitting — please fill: ${missing.slice(0, 4).join("; ")}. Then submit and press Applied.`, "warn");
+          return;
+        }
+        const btn = findSubmitButton();
+        if (!btn) { log("Couldn't find the Submit button — please submit, then press Applied.", "warn"); return; }
+        log("All required fields are filled. Submitting…");
+        btn.click();
+        setTimeout(() => { if (!done) log("No confirmation yet — the site may be asking for a captcha. Finish on the page, then press Applied.", "warn"); }, 20000);
+      })();
     }
     // Watch for the site's own success message.
     const watch = new MutationObserver(debounce(() => {
@@ -451,5 +548,6 @@
   });
 
   window.JP = { send, api, text, first, visible, debounce, panel, setPanel, esc, collectFields, autofill, learnAnswers, runTask,
+    fillReviewed, missingRequired, findSubmitButton,
     captureJobs, badge, jobPanel, fill, bestOption, labelOf, isClosedText };
 })();
